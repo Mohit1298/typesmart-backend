@@ -14,6 +14,7 @@ export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 export interface User {
   id: string;
   email: string;
+  password_hash: string | null;
   plan_type: 'free' | 'pro';
   monthly_credits: number;
   monthly_credits_used: number;
@@ -23,6 +24,7 @@ export interface User {
   is_admin: boolean;
   admin_notes: string | null;
   stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
   created_at: string;
   last_active_at: string;
 }
