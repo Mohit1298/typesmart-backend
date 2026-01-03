@@ -28,7 +28,9 @@ export async function processAIRequest(options: AIRequestOptions): Promise<AIRes
   const { prompt, imageBase64, maxTokens = 500, temperature = 0.7 } = options;
   
   const isVisionRequest = !!imageBase64;
-  const model = isVisionRequest ? 'gpt-4o' : 'gpt-4o-mini';
+  // gpt-5-nano: 67% cheaper than gpt-4o-mini for text
+  // gpt-4.1: 20% cheaper than gpt-4o for vision
+  const model = isVisionRequest ? 'gpt-4.1' : 'gpt-5-nano';
   
   let messages: OpenAI.ChatCompletionMessageParam[];
   
