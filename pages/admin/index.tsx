@@ -174,7 +174,7 @@ export default function AdminDashboard() {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
         <Head>
-          <title>Admin Login - OpenDoor</title>
+          <title>Admin Login - TypeSmart</title>
         </Head>
         <div className="bg-gray-800 p-8 rounded-xl shadow-xl w-full max-w-md">
           <h1 className="text-2xl font-bold text-white mb-6 text-center">
@@ -219,13 +219,13 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       <Head>
-        <title>Admin Dashboard - OpenDoor</title>
+        <title>Admin Dashboard - TypeSmart</title>
       </Head>
 
       {/* Header */}
       <header className="bg-gray-800 border-b border-gray-700 px-6 py-4">
         <div className="flex justify-between items-center">
-          <h1 className="text-2xl font-bold">🎛️ OpenDoor Admin</h1>
+          <h1 className="text-2xl font-bold">🎛️ TypeSmart Admin</h1>
           <button
             onClick={handleLogout}
             className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm transition"

@@ -5,14 +5,14 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 text-white">
       <Head>
-        <title>OpenDoor Keyboard - AI-Powered Typing</title>
+        <title>TypeSmart - AI-Powered Keyboard</title>
         <meta name="description" content="AI-powered keyboard for iOS" />
       </Head>
 
       <div className="container mx-auto px-6 py-20">
         <div className="text-center max-w-3xl mx-auto">
           <h1 className="text-5xl font-bold mb-6 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-            ⌨️ OpenDoor Keyboard
+            ⌨️ TypeSmart
           </h1>
           <p className="text-xl text-gray-300 mb-8">
             AI-powered iOS keyboard that rephrases, generates, and enhances your text instantly.
@@ -107,7 +107,7 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="border-t border-white/10 mt-20 py-8 text-center text-gray-500">
-        <p>© 2024 OpenDoor Keyboard. All rights reserved.</p>
+        <p>© 2024 TypeSmart. All rights reserved.</p>
       </footer>
     </div>
   );
