@@ -45,7 +45,7 @@ export default async function handler(
       return res.status(200).json({
         success: true,
         message: 'Transaction already processed',
-        credits: credits.total,
+        credits: credits,
       });
     }
 
@@ -98,7 +98,7 @@ export default async function handler(
 
     return res.status(200).json({
       success: true,
-      credits: credits.total,
+      credits: credits,
       creditsAdded: creditsToAdd,
       productId,
     });
