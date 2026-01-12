@@ -24,3 +24,6 @@ CREATE INDEX IF NOT EXISTS idx_iap_transactions_original_id ON iap_transactions(
 -- Add comment
 COMMENT ON TABLE iap_transactions IS 'Stores Apple In-App Purchase transactions to prevent duplicate processing';
 
+
+
+
