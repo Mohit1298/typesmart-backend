@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { supabase, getUserFromToken } from '../../../lib/supabase';
+import { supabaseAdmin } from '../../../lib/supabase';
+import { requireAuth } from '../../../lib/auth';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   // Only allow POST
@@ -8,20 +9,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    // Get user from token
-    const user = await getUserFromToken(req);
-    if (!user) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+    // Authenticate user
+    const user = await requireAuth(req);
 
     // Delete user's IAP transactions
-    await supabase
+    await supabaseAdmin
       .from('iap_transactions')
       .delete()
       .eq('user_id', user.id);
 
     // Delete the user account
-    const { error } = await supabase
+    const { error } = await supabaseAdmin
       .from('users')
       .delete()
       .eq('id', user.id);
@@ -35,8 +33,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       success: true, 
       message: 'Account and all associated data deleted successfully' 
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Delete account error:', error);
+    
+    if (error.message === 'Unauthorized') {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
