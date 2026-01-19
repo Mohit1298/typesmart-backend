@@ -59,12 +59,13 @@ export default async function handler(
       isSubscription = true;
       creditsToAdd = PRO_MONTHLY_CREDITS;
       
-      // Update user to Pro plan
+      // Update user to Pro plan and reset monthly usage
       const { error: updateError } = await supabaseAdmin
         .from('users')
         .update({
           plan_type: 'pro',
           monthly_credits: PRO_MONTHLY_CREDITS,
+          monthly_credits_used: 0,  // Reset usage so user gets full 500 credits
         })
         .eq('id', user.id);
       
