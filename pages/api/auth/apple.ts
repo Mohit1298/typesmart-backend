@@ -14,7 +14,15 @@ export default async function handler(
   }
 
   try {
-    const { identityToken, email: providedEmail, fullName, localCreditsToMerge, deviceId } = req.body;
+    const { 
+      identityToken, 
+      email: providedEmail, 
+      fullName, 
+      localCreditsToMerge, 
+      deviceId,
+      localProOriginalTransactionId,  // Local Pro subscription transaction ID
+      localProCreditsRemaining        // How many Pro credits user has left locally
+    } = req.body;
     
     if (!identityToken) {
       return res.status(400).json({ error: 'Identity token is required' });
@@ -29,6 +37,9 @@ export default async function handler(
     
     // Use provided email if available (Apple only sends email on first sign in)
     const email = providedEmail || appleData.email;
+    
+    // Check if user has a local Pro subscription to sync
+    const hasLocalPro = !!localProOriginalTransactionId;
     
     // Check if user already exists (including archived)
     const { data: existingUser } = await supabaseAdmin
@@ -117,6 +128,60 @@ export default async function handler(
       } else {
         user.bonus_credits += localCreditsToMerge;
         console.log(`✅ Merged ${localCreditsToMerge} local credits for existing Apple user ${user.id}`);
+      }
+    }
+    
+    // Sync local Pro subscription if exists
+    if (hasLocalPro) {
+      console.log(`🔄 Syncing local Pro subscription for user ${user.id}`);
+      console.log(`   Original Transaction ID: ${localProOriginalTransactionId}`);
+      console.log(`   Credits remaining: ${localProCreditsRemaining}`);
+      
+      // Check if this transaction was already recorded
+      const { data: existingTx } = await supabaseAdmin
+        .from('iap_transactions')
+        .select('id')
+        .eq('original_transaction_id', localProOriginalTransactionId)
+        .single();
+      
+      if (!existingTx) {
+        // New Pro subscription - record it and upgrade user
+        await supabaseAdmin
+          .from('iap_transactions')
+          .insert({
+            user_id: user.id,
+            transaction_id: localProOriginalTransactionId,
+            original_transaction_id: localProOriginalTransactionId,
+            product_id: 'com.wirtel.TypeSmart.pro.monthly',
+            credits_added: 500,
+            is_subscription: true,
+          });
+        
+        console.log(`✅ Recorded Pro subscription for user ${user.id}`);
+      } else {
+        console.log(`ℹ️ Pro subscription already recorded`);
+      }
+      
+      // Update user to Pro with remaining credits
+      // Use remaining local credits (what user had left after using some)
+      const creditsToSet = typeof localProCreditsRemaining === 'number' ? localProCreditsRemaining : 500;
+      
+      const { error: proError } = await supabaseAdmin
+        .from('users')
+        .update({
+          plan_type: 'pro',
+          monthly_credits: 500,
+          monthly_credits_used: 500 - creditsToSet,  // Calculate used based on remaining
+        })
+        .eq('id', user.id);
+      
+      if (proError) {
+        console.error('Failed to sync Pro status:', proError);
+      } else {
+        user.plan_type = 'pro';
+        user.monthly_credits = 500;
+        user.monthly_credits_used = 500 - creditsToSet;
+        console.log(`✅ User ${user.id} synced to Pro with ${creditsToSet} credits remaining`);
       }
     }
     
