@@ -13,7 +13,7 @@ export default async function handler(
   try {
     await requireAdmin(req);
     
-    const { search, page = '1', limit = '20', plan, vip } = req.query;
+    const { search, page = '1', limit = '20', plan, vip, archived } = req.query;
     
     const pageNum = parseInt(page as string);
     const limitNum = parseInt(limit as string);
@@ -38,6 +38,14 @@ export default async function handler(
       query = query.eq('is_vip', true);
     }
     
+    // Filter by archived status
+    if (archived === 'true') {
+      query = query.not('archived_at', 'is', null);
+    } else if (archived === 'false') {
+      query = query.is('archived_at', null);
+    }
+    // If archived is 'all' or not set, show all users
+    
     // Pagination and ordering
     query = query
       .order('created_at', { ascending: false })
@@ -59,6 +67,12 @@ export default async function handler(
         return { data: planCounts };
       });
     
+    // Count archived users
+    const { count: archivedCount } = await supabaseAdmin
+      .from('users')
+      .select('*', { count: 'exact', head: true })
+      .not('archived_at', 'is', null);
+    
     return res.status(200).json({
       success: true,
       users: users?.map(u => ({
@@ -71,9 +85,12 @@ export default async function handler(
         isVip: u.is_vip,
         isAdmin: u.is_admin,
         adminNotes: u.admin_notes,
+        archivedAt: u.archived_at,  // Include archive status
+        isArchived: !!u.archived_at,
         createdAt: u.created_at,
         lastActiveAt: u.last_active_at,
       })),
+      archivedCount: archivedCount || 0,
       pagination: {
         page: pageNum,
         limit: limitNum,

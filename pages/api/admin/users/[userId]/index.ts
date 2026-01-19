@@ -68,6 +68,9 @@ export default async function handler(
           isAdmin: user.is_admin,
           adminNotes: user.admin_notes,
           stripeCustomerId: user.stripe_customer_id,
+          archivedAt: user.archived_at,
+          isArchived: !!user.archived_at,
+          appleUserId: user.apple_user_id,
           createdAt: user.created_at,
           lastActiveAt: user.last_active_at,
         },
@@ -81,13 +84,35 @@ export default async function handler(
       
     } else if (req.method === 'PATCH') {
       // Update user
-      const { planType, monthlyCredits, adminNotes } = req.body;
+      const { planType, monthlyCredits, monthlyCreditsUsed, bonusCredits, adminNotes, archived } = req.body;
       
       const updateData: any = {};
       
-      if (planType) updateData.plan_type = planType;
+      // Plan change (free/pro)
+      if (planType) {
+        updateData.plan_type = planType;
+        // When changing to pro, set monthly credits to 500
+        if (planType === 'pro') {
+          updateData.monthly_credits = 500;
+          updateData.monthly_credits_used = 0;
+        } else if (planType === 'free') {
+          updateData.monthly_credits = 50;
+        }
+      }
+      
+      // Direct credit adjustments
       if (monthlyCredits !== undefined) updateData.monthly_credits = monthlyCredits;
+      if (monthlyCreditsUsed !== undefined) updateData.monthly_credits_used = monthlyCreditsUsed;
+      if (bonusCredits !== undefined) updateData.bonus_credits = bonusCredits;
       if (adminNotes !== undefined) updateData.admin_notes = adminNotes;
+      
+      // Archive/restore account
+      if (archived === true) {
+        updateData.archived_at = new Date().toISOString();
+        updateData.password_hash = null;  // Clear password for security
+      } else if (archived === false) {
+        updateData.archived_at = null;  // Restore account
+      }
       
       const { error } = await supabaseAdmin
         .from('users')
@@ -96,9 +121,53 @@ export default async function handler(
       
       if (error) throw error;
       
+      // Log the action
+      const user = await getUserById(userId);
+      console.log(`👤 Admin updated user ${userId} (${user?.email}):`, updateData);
+      
       return res.status(200).json({
         success: true,
         message: 'User updated',
+        updates: updateData,
+      });
+      
+    } else if (req.method === 'DELETE') {
+      // Permanently delete user (hard delete)
+      const user = await getUserById(userId);
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Delete associated data first
+      await supabaseAdmin
+        .from('iap_transactions')
+        .delete()
+        .eq('user_id', userId);
+      
+      await supabaseAdmin
+        .from('usage_logs')
+        .delete()
+        .eq('user_id', userId);
+      
+      await supabaseAdmin
+        .from('credit_adjustments')
+        .delete()
+        .eq('user_id', userId);
+      
+      // Delete the user
+      const { error } = await supabaseAdmin
+        .from('users')
+        .delete()
+        .eq('id', userId);
+      
+      if (error) throw error;
+      
+      console.log(`🗑️ Admin permanently deleted user ${userId} (${user.email})`);
+      
+      return res.status(200).json({
+        success: true,
+        message: `User ${user.email} permanently deleted`,
       });
       
     } else {
