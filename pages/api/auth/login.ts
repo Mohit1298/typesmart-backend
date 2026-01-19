@@ -1,6 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getUserByEmail, supabaseAdmin } from '@/lib/supabase';
-import { verifyPassword, generateToken } from '@/lib/auth';
+import { verifyPassword, generateToken, hashPassword } from '@/lib/auth';
+
+// Archive duration - accounts are permanently deleted after this period
+const ARCHIVE_DURATION_DAYS = 30;
 
 export default async function handler(
   req: NextApiRequest,
@@ -20,7 +23,26 @@ export default async function handler(
     // Get user
     const user = await getUserByEmail(email);
     
-    if (!user || !user.password_hash) {
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    
+    // Check if account is archived
+    if (user.archived_at) {
+      const archivedDate = new Date(user.archived_at);
+      const now = new Date();
+      const daysSinceArchived = Math.floor((now.getTime() - archivedDate.getTime()) / (1000 * 60 * 60 * 24));
+      
+      if (daysSinceArchived < ARCHIVE_DURATION_DAYS) {
+        // Account is archived - tell user to sign up to restore
+        return res.status(401).json({ 
+          error: 'This account was deleted. Sign up with the same email to restore it.',
+          code: 'ACCOUNT_ARCHIVED'
+        });
+      }
+    }
+    
+    if (!user.password_hash) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     
