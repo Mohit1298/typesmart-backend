@@ -3,21 +3,24 @@ import { requireAuth } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabase';
 
 interface TransferRequest {
-  credits?: number;
-  isPro?: boolean;
-  planType?: string;
+  credits: number;
   deviceId: string;
   reason?: string;
 }
 
 /**
- * Transfer Credits & Subscription Endpoint
+ * Transfer Credits Endpoint
  * 
- * Transfers locally stored data (credits & Pro subscription from anonymous purchases) to the user's account.
+ * Transfers locally stored CONSUMABLE credits (from anonymous purchases) to the user's account.
  * This is called when a user logs in after making purchases while not logged in.
  * 
+ * IMPORTANT: This only transfers consumable credit packs (100/500 credit purchases).
+ * Pro subscriptions are NOT transferred because they are tied to the Apple ID via StoreKit,
+ * not to the account. If a user with a Pro subscription logs into a different account,
+ * the subscription stays with their Apple ID and the account doesn't get Pro status.
+ * 
  * Per Apple Guideline 5.1.1, users can purchase without logging in.
- * This endpoint ensures those purchases are properly credited to their account.
+ * This endpoint ensures those consumable purchases are properly credited to their account.
  */
 export default async function handler(
   req: NextApiRequest,
@@ -31,20 +34,20 @@ export default async function handler(
     // Authenticate user
     const user = await requireAuth(req);
     
-    const { credits, isPro, planType, deviceId, reason }: TransferRequest = req.body;
+    const { credits, deviceId, reason }: TransferRequest = req.body;
     
     if (!deviceId) {
       return res.status(400).json({ error: 'Device ID required' });
     }
     
-    if (!credits && !isPro) {
-      return res.status(400).json({ error: 'Nothing to transfer' });
+    if (!credits || credits <= 0) {
+      return res.status(400).json({ error: 'Invalid credits amount' });
     }
     
     // Get current user data
     const { data: userData, error: userError } = await supabaseAdmin
       .from('users')
-      .select('bonus_credits, plan_type, monthly_credits')
+      .select('bonus_credits')
       .eq('id', user.id)
       .single();
     
@@ -53,55 +56,37 @@ export default async function handler(
       return res.status(500).json({ error: 'Failed to fetch user data' });
     }
     
-    // Prepare update data
-    const updateData: any = {};
+    // Add consumable credits to bonus_credits
+    const currentBonus = userData?.bonus_credits || 0;
+    const newBonus = currentBonus + credits;
     
-    // Transfer credits
-    if (credits && credits > 0) {
-      const currentBonus = userData?.bonus_credits || 0;
-      updateData.bonus_credits = currentBonus + credits;
-    }
-    
-    // Transfer Pro subscription
-    if (isPro && planType === 'pro') {
-      updateData.plan_type = 'pro';
-      updateData.monthly_credits = 500; // Pro plan gets 500 credits/month
-      
-      console.log(`Pro subscription transferred: user=${user.id}, deviceId=${deviceId.substring(0, 8)}...`);
-    }
-    
-    // Update user account
     const { error: updateError } = await supabaseAdmin
       .from('users')
-      .update(updateData)
+      .update({ bonus_credits: newBonus })
       .eq('id', user.id);
     
     if (updateError) {
-      console.error('Error updating user:', updateError);
-      return res.status(500).json({ error: 'Failed to transfer data' });
+      console.error('Error updating credits:', updateError);
+      return res.status(500).json({ error: 'Failed to transfer credits' });
     }
     
     // Log the transfer for audit purposes
-    console.log(`Data transferred: user=${user.id}, credits=${credits || 0}, isPro=${isPro || false}, deviceId=${deviceId.substring(0, 8)}..., reason=${reason || 'anonymous_transfer'}`);
+    console.log(`Consumable credits transferred: user=${user.id}, amount=${credits}, deviceId=${deviceId.substring(0, 8)}..., reason=${reason || 'anonymous_transfer'}`);
     
     return res.status(200).json({
       success: true,
-      credits: updateData.bonus_credits,
-      planType: updateData.plan_type || userData?.plan_type,
-      transferred: {
-        credits: credits || 0,
-        isPro: isPro || false
-      },
-      message: 'Successfully transferred your purchases to your account'
+      credits: newBonus,
+      transferred: credits,
+      message: `Successfully transferred ${credits} credits to your account`
     });
     
   } catch (error: any) {
-    console.error('Transfer data error:', error);
+    console.error('Transfer credits error:', error);
     
     if (error.message === 'Unauthorized') {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     
-    return res.status(500).json({ error: 'Failed to transfer data' });
+    return res.status(500).json({ error: 'Failed to transfer credits' });
   }
 }
