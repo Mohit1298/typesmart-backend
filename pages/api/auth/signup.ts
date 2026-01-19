@@ -11,7 +11,7 @@ export default async function handler(
   }
 
   try {
-    const { email, password } = req.body;
+    const { email, password, localCreditsToMerge, deviceId } = req.body;
     
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
@@ -31,6 +31,10 @@ export default async function handler(
     // Hash password
     const passwordHash = await hashPassword(password);
     
+    // Calculate initial credits (50 free + any local credits to merge)
+    const initialMonthlyCredits = 50;
+    const initialBonusCredits = localCreditsToMerge && localCreditsToMerge > 0 ? localCreditsToMerge : 0;
+    
     // Create user
     const { data: user, error } = await supabaseAdmin
       .from('users')
@@ -38,14 +42,18 @@ export default async function handler(
         email,
         password_hash: passwordHash,
         plan_type: 'free',
-        monthly_credits: 50,
-        bonus_credits: 0,
+        monthly_credits: initialMonthlyCredits,
+        bonus_credits: initialBonusCredits,
       })
       .select()
       .single();
     
     if (error) {
       throw error;
+    }
+    
+    if (localCreditsToMerge && localCreditsToMerge > 0) {
+      console.log(`New user ${user.id} created with ${localCreditsToMerge} merged local credits`);
     }
     
     // Generate token

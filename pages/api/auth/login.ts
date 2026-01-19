@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getUserByEmail, getAvailableCredits } from '@/lib/supabase';
+import { getUserByEmail, supabaseAdmin } from '@/lib/supabase';
 import { verifyPassword, generateToken } from '@/lib/auth';
 
 export default async function handler(
@@ -11,7 +11,7 @@ export default async function handler(
   }
 
   try {
-    const { email, password } = req.body;
+    const { email, password, localCreditsToMerge, deviceId } = req.body;
     
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
@@ -31,11 +31,29 @@ export default async function handler(
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     
+    // Merge local credits if provided
+    if (localCreditsToMerge && localCreditsToMerge > 0) {
+      const { error: updateError } = await supabaseAdmin
+        .from('users')
+        .update({
+          bonus_credits: user.bonus_credits + localCreditsToMerge,
+        })
+        .eq('id', user.id);
+      
+      if (updateError) {
+        console.error('Failed to merge local credits:', updateError);
+      } else {
+        // Update user object for response
+        user.bonus_credits += localCreditsToMerge;
+        console.log(`✅ Merged ${localCreditsToMerge} local credits for user ${user.id}. New bonus: ${user.bonus_credits}`);
+      }
+    }
+    
     // Generate token
     const token = generateToken(user);
     
-    // Get available credits
-    const credits = await getAvailableCredits(user.id);
+    // Calculate credits directly from updated user object to ensure consistency
+    const credits = user.monthly_credits + user.bonus_credits;
     
     return res.status(200).json({
       success: true,

@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { requireAuth } from '@/lib/auth';
+import { authenticateRequest } from '@/lib/auth';
 import { getAvailableCredits, deductCredits, logUsage } from '@/lib/supabase';
 import { processAIRequest, AI_PROMPTS, CREDIT_COSTS } from '@/lib/openai';
 
@@ -12,6 +12,7 @@ interface RequestBody {
   action: ActionType;
   text?: string;
   imageBase64?: string;
+  deviceId?: string;  // For guest mode
 }
 
 export const config = {
@@ -36,10 +37,10 @@ export default async function handler(
   }
 
   try {
-    // Authenticate user
-    const user = await requireAuth(req);
+    // Try to authenticate user (optional - supports guest mode)
+    const user = await authenticateRequest(req);
     
-    const { action, text, imageBase64 }: RequestBody = req.body;
+    const { action, text, imageBase64, deviceId }: RequestBody = req.body;
     
     if (!action) {
       return res.status(400).json({ error: 'Action is required' });
@@ -49,17 +50,26 @@ export default async function handler(
     const hasImage = !!imageBase64;
     const creditCost = hasImage ? CREDIT_COSTS.vision : CREDIT_COSTS.text;
     
-    // Check available credits
-    const availableCredits = await getAvailableCredits(user.id);
+    // For logged-in users, check server-side credits
+    // For guests, the client manages local credits - we trust the client's check
+    let availableCredits = 0;
     
-    if (availableCredits < creditCost) {
-      return res.status(402).json({ 
-        error: 'Insufficient credits',
-        availableCredits,
-        requiredCredits: creditCost,
-        upgradeUrl: '/pricing'
-      });
+    if (user) {
+      availableCredits = await getAvailableCredits(user.id);
+      
+      if (availableCredits < creditCost) {
+        return res.status(402).json({ 
+          error: 'Insufficient credits',
+          availableCredits,
+          requiredCredits: creditCost,
+          upgradeUrl: '/pricing'
+        });
+      }
+    } else if (!deviceId) {
+      // No user and no deviceId - reject
+      return res.status(401).json({ error: 'Authentication or device ID required' });
     }
+    // For guests with deviceId, we proceed (client manages credits locally)
     
     // Build the prompt based on action
     let prompt: string;
@@ -114,41 +124,44 @@ export default async function handler(
       imageBase64,
     });
     
-    // Deduct credits
-    await deductCredits(user.id, creditCost);
+    let newCredits = 0;
     
-    // Calculate approximate cost (for analytics)
-    const costPerInputToken = aiResponse.model === 'gpt-4o' ? 0.005 / 1000 : 0.00015 / 1000;
-    const costPerOutputToken = aiResponse.model === 'gpt-4o' ? 0.015 / 1000 : 0.0006 / 1000;
-    const costUsd = (aiResponse.tokensInput * costPerInputToken) + (aiResponse.tokensOutput * costPerOutputToken);
-    
-    // Log usage
-    await logUsage(
-      user.id,
-      action,
-      hasImage,
-      creditCost,
-      aiResponse.tokensInput,
-      aiResponse.tokensOutput,
-      costUsd
-    );
-    
-    // Get updated credit balance
-    const newCredits = await getAvailableCredits(user.id);
+    // Only deduct and log for logged-in users
+    // Guests manage their credits locally on device
+    if (user) {
+      // Deduct credits
+      await deductCredits(user.id, creditCost);
+      
+      // Calculate approximate cost (for analytics)
+      const costPerInputToken = aiResponse.model === 'gpt-4o' ? 0.005 / 1000 : 0.00015 / 1000;
+      const costPerOutputToken = aiResponse.model === 'gpt-4o' ? 0.015 / 1000 : 0.0006 / 1000;
+      const costUsd = (aiResponse.tokensInput * costPerInputToken) + (aiResponse.tokensOutput * costPerOutputToken);
+      
+      // Log usage
+      await logUsage(
+        user.id,
+        action,
+        hasImage,
+        creditCost,
+        aiResponse.tokensInput,
+        aiResponse.tokensOutput,
+        costUsd
+      );
+      
+      // Get updated credit balance
+      newCredits = await getAvailableCredits(user.id);
+    }
     
     return res.status(200).json({
       success: true,
       result: aiResponse.text,
       creditsUsed: creditCost,
-      creditsRemaining: newCredits,
+      creditsRemaining: user ? newCredits : undefined,  // Only return for logged-in users
+      isGuest: !user,
     });
     
   } catch (error: any) {
     console.error('AI processing error:', error);
-    
-    if (error.message === 'Unauthorized') {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
     
     return res.status(500).json({ 
       error: 'Failed to process request',

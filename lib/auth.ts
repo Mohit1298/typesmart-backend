@@ -100,9 +100,11 @@ export async function verifyAppleToken(identityToken: string): Promise<{
 }
 
 // Create or get user from Apple Sign In
+// localCreditsToMerge: credits from device to merge into account (only for new users)
 export async function getOrCreateAppleUser(
   appleUserId: string,
-  email: string
+  email: string,
+  localCreditsToMerge?: number
 ): Promise<User> {
   // Check if user exists
   const { data: existingUser } = await supabaseAdmin
@@ -112,6 +114,7 @@ export async function getOrCreateAppleUser(
     .single();
   
   if (existingUser) {
+    // Existing user - local credits will be merged separately in the endpoint
     return existingUser;
   }
   
@@ -129,10 +132,14 @@ export async function getOrCreateAppleUser(
       .update({ apple_user_id: appleUserId })
       .eq('id', emailUser.id);
     
+    // Existing user - local credits will be merged separately in the endpoint
     return { ...emailUser, apple_user_id: appleUserId };
   }
   
-  // Create new user
+  // Calculate initial credits for new user
+  const initialBonusCredits = localCreditsToMerge && localCreditsToMerge > 0 ? localCreditsToMerge : 0;
+  
+  // Create new user with merged local credits
   const { data: newUser, error } = await supabaseAdmin
     .from('users')
     .insert({
@@ -140,13 +147,17 @@ export async function getOrCreateAppleUser(
       apple_user_id: appleUserId,
       plan_type: 'free',
       monthly_credits: 50,
-      bonus_credits: 0,
+      bonus_credits: initialBonusCredits,
     })
     .select()
     .single();
   
   if (error) {
     throw new Error('Failed to create user');
+  }
+  
+  if (localCreditsToMerge && localCreditsToMerge > 0) {
+    console.log(`New Apple user ${newUser.id} created with ${localCreditsToMerge} merged local credits`);
   }
   
   return newUser;
