@@ -40,39 +40,34 @@ export default async function handler(
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Check if this transaction was already processed FOR THIS USER
-    // We check by user_id AND transaction_id because:
-    // - Same Apple ID subscription can be synced to multiple app accounts
-    // - But we don't want to process the same transaction twice for the same user
+    // Check if this transaction was already processed
     const { data: existingTransaction } = await supabaseAdmin
       .from('iap_transactions')
-      .select('id')
+      .select('id, user_id')
       .eq('transaction_id', transactionId)
-      .eq('user_id', user.id)
       .single();
 
     if (existingTransaction) {
-      // Transaction already processed for THIS user - return current credits and plan
-      console.log(`Transaction ${transactionId} already processed for user ${user.id}`);
-      const credits = await getAvailableCredits(user.id);
-      return res.status(200).json({
-        success: true,
-        message: 'Transaction already processed',
-        credits: credits,
-        planType: user.plan_type,
-      });
-    }
-    
-    // For subscriptions: check if this user is already Pro (might have been synced via different transaction)
-    if (productId === PRO_MONTHLY_PRODUCT_ID && user.plan_type === 'pro') {
-      console.log(`User ${user.id} is already Pro`);
-      const credits = await getAvailableCredits(user.id);
-      return res.status(200).json({
-        success: true,
-        message: 'User is already Pro',
-        credits: credits,
-        planType: 'pro',
-      });
+      // Transaction exists - check if it belongs to this user or a different user
+      if (existingTransaction.user_id === user.id) {
+        // Same user - just return current state
+        console.log(`Transaction ${transactionId} already processed for this user`);
+        const credits = await getAvailableCredits(user.id);
+        return res.status(200).json({
+          success: true,
+          message: 'Transaction already processed',
+          credits: credits,
+          planType: user.plan_type,
+        });
+      } else {
+        // DIFFERENT user owns this transaction/subscription!
+        // This means Apple ID's subscription is linked to another app account
+        console.log(`❌ Transaction ${transactionId} belongs to different user: ${existingTransaction.user_id}`);
+        return res.status(400).json({
+          error: 'This Apple ID subscription is already linked to another account. Please use a different Apple ID or sign into the original account.',
+          code: 'SUBSCRIPTION_LINKED_TO_OTHER_ACCOUNT'
+        });
+      }
     }
 
     // Determine credits to add based on product
