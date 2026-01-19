@@ -43,31 +43,19 @@ export default async function handler(
     // Check if this transaction was already processed
     const { data: existingTransaction } = await supabaseAdmin
       .from('iap_transactions')
-      .select('id, user_id')
+      .select('id')
       .eq('transaction_id', transactionId)
       .single();
 
     if (existingTransaction) {
-      // Transaction exists - check if it belongs to this user or a different user
-      if (existingTransaction.user_id === user.id) {
-        // Same user - just return current state
-        console.log(`Transaction ${transactionId} already processed for this user`);
-        const credits = await getAvailableCredits(user.id);
-        return res.status(200).json({
-          success: true,
-          message: 'Transaction already processed',
-          credits: credits,
-          planType: user.plan_type,
-        });
-      } else {
-        // DIFFERENT user owns this transaction/subscription!
-        // This means Apple ID's subscription is linked to another app account
-        console.log(`❌ Transaction ${transactionId} belongs to different user: ${existingTransaction.user_id}`);
-        return res.status(400).json({
-          error: 'This Apple ID subscription is already linked to another account. Please use a different Apple ID or sign into the original account.',
-          code: 'SUBSCRIPTION_LINKED_TO_OTHER_ACCOUNT'
-        });
-      }
+      // Transaction already processed - return current credits and plan
+      const credits = await getAvailableCredits(user.id);
+      return res.status(200).json({
+        success: true,
+        message: 'Transaction already processed',
+        credits: credits,
+        planType: user.plan_type,  // Include current plan type
+      });
     }
 
     // Determine credits to add based on product

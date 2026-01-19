@@ -31,9 +31,13 @@ export default async function handler(
     // Hash password
     const passwordHash = await hashPassword(password);
     
-    // Calculate initial credits (50 free + any local credits to merge)
-    const initialMonthlyCredits = 50;
+    // Email/password signups get 0 free monthly credits
+    // Only Apple Sign-In gets the 50 free monthly credits (to prevent abuse)
+    // Purchased credits (localCreditsToMerge) are still added as bonus
+    const initialMonthlyCredits = 0;
     const initialBonusCredits = localCreditsToMerge && localCreditsToMerge > 0 ? localCreditsToMerge : 0;
+    
+    console.log(`📝 Email signup: ${email} - Monthly: ${initialMonthlyCredits}, Bonus: ${initialBonusCredits}`);
     
     // Create user
     const { data: user, error } = await supabaseAdmin
