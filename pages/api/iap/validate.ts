@@ -40,12 +40,13 @@ export default async function handler(
       .single();
 
     if (existingTransaction) {
-      // Transaction already processed - return current credits
+      // Transaction already processed - return current credits and plan
       const credits = await getAvailableCredits(user.id);
       return res.status(200).json({
         success: true,
         message: 'Transaction already processed',
         credits: credits,
+        planType: user.plan_type,  // Include current plan type
       });
     }
 
@@ -59,30 +60,44 @@ export default async function handler(
       creditsToAdd = PRO_MONTHLY_CREDITS;
       
       // Update user to Pro plan
-      await supabaseAdmin
+      const { error: updateError } = await supabaseAdmin
         .from('users')
         .update({
           plan_type: 'pro',
           monthly_credits: PRO_MONTHLY_CREDITS,
         })
         .eq('id', user.id);
+      
+      if (updateError) {
+        console.error('Failed to update user to Pro:', updateError);
+        throw new Error('Failed to update subscription');
+      }
+      
+      console.log(`✅ User ${user.id} upgraded to Pro plan`);
     } else if (PRODUCT_CREDITS[productId]) {
       // Credit pack purchase
       creditsToAdd = PRODUCT_CREDITS[productId];
       
       // Add to bonus credits
-      await supabaseAdmin
+      const { error: creditError } = await supabaseAdmin
         .from('users')
         .update({
           bonus_credits: user.bonus_credits + creditsToAdd,
         })
         .eq('id', user.id);
+      
+      if (creditError) {
+        console.error('Failed to add bonus credits:', creditError);
+        throw new Error('Failed to add credits');
+      }
+      
+      console.log(`✅ Added ${creditsToAdd} bonus credits to user ${user.id}`);
     } else {
       return res.status(400).json({ error: 'Unknown product ID' });
     }
 
     // Record the transaction
-    await supabaseAdmin
+    const { error: txError } = await supabaseAdmin
       .from('iap_transactions')
       .insert({
         user_id: user.id,
@@ -92,6 +107,11 @@ export default async function handler(
         credits_added: creditsToAdd,
         is_subscription: isSubscription,
       });
+    
+    if (txError) {
+      console.error('Failed to record transaction:', txError);
+      // Don't throw - user already got their credits/subscription
+    }
 
     // Get updated credits
     const credits = await getAvailableCredits(user.id);
