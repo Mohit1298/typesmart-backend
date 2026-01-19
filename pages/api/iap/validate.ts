@@ -101,6 +101,7 @@ export default async function handler(
       credits: credits,
       creditsAdded: creditsToAdd,
       productId,
+      planType: isSubscription ? 'pro' : user.plan_type,
     });
 
   } catch (error: any) {
