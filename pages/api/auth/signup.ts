@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { supabaseAdmin } from '@/lib/supabase';
-import { hashPassword, generateToken } from '@/lib/auth';
+import { hashPassword, generateToken, verifyAppleToken } from '@/lib/auth';
 
 export default async function handler(
   req: NextApiRequest,
@@ -11,7 +11,7 @@ export default async function handler(
   }
 
   try {
-    const { email, password, localCreditsToMerge, deviceId } = req.body;
+    const { email, password, localCreditsToMerge, deviceId, appleIdentityToken } = req.body;
     
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
@@ -31,13 +31,25 @@ export default async function handler(
     // Hash password
     const passwordHash = await hashPassword(password);
     
-    // Email/password signups get 0 free monthly credits
-    // Only Apple Sign-In gets the 50 free monthly credits (to prevent abuse)
-    // Purchased credits (localCreditsToMerge) are still added as bonus
-    const initialMonthlyCredits = 0;
+    // Determine if signup email matches device's Apple ID
+    // If appleIdentityToken is provided, verify it and check if emails match
+    let emailMatchesAppleId = false;
+    
+    if (appleIdentityToken) {
+      const appleData = await verifyAppleToken(appleIdentityToken);
+      if (appleData && appleData.email) {
+        // Compare emails (case-insensitive)
+        emailMatchesAppleId = appleData.email.toLowerCase() === email.toLowerCase();
+        console.log(`🍎 Apple verification: ${appleData.email} vs ${email} = ${emailMatchesAppleId ? 'MATCH' : 'NO MATCH'}`);
+      }
+    }
+    
+    // Give 50 free credits only if email matches Apple ID
+    // Otherwise 0 free credits (to prevent multi-account abuse)
+    const initialMonthlyCredits = emailMatchesAppleId ? 50 : 0;
     const initialBonusCredits = localCreditsToMerge && localCreditsToMerge > 0 ? localCreditsToMerge : 0;
     
-    console.log(`📝 Email signup: ${email} - Monthly: ${initialMonthlyCredits}, Bonus: ${initialBonusCredits}`);
+    console.log(`📝 Email signup: ${email} - Apple verified: ${emailMatchesAppleId} - Monthly: ${initialMonthlyCredits}, Bonus: ${initialBonusCredits}`);
     
     // Create user
     const { data: user, error } = await supabaseAdmin
