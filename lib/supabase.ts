@@ -15,6 +15,7 @@ export interface User {
   id: string;
   email: string;
   password_hash: string | null;
+  apple_user_id: string | null;
   plan_type: 'free' | 'pro';
   monthly_credits: number;
   monthly_credits_used: number;
@@ -25,6 +26,7 @@ export interface User {
   admin_notes: string | null;
   stripe_customer_id: string | null;
   stripe_subscription_id: string | null;
+  archived_at: string | null;  // Soft delete - account is archived, not deleted
   created_at: string;
   last_active_at: string;
 }
