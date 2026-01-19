@@ -11,6 +11,8 @@ interface User {
   isVip: boolean;
   isAdmin: boolean;
   adminNotes: string | null;
+  archivedAt: string | null;
+  isArchived: boolean;
   createdAt: string;
   lastActiveAt: string;
 }
@@ -27,12 +29,15 @@ export default function AdminDashboard() {
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [search, setSearch] = useState('');
   const [planFilter, setPlanFilter] = useState('all');
+  const [archivedFilter, setArchivedFilter] = useState('false'); // Show active by default
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState('');
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [creditsToAdd, setCreditsToAdd] = useState(50);
   const [creditReason, setCreditReason] = useState('');
   const [stats, setStats] = useState<any>(null);
+  const [archivedCount, setArchivedCount] = useState(0);
+  const [actionLoading, setActionLoading] = useState(false);
 
   // Login form state
   const [email, setEmail] = useState('');
@@ -53,7 +58,7 @@ export default function AdminDashboard() {
     if (isLoggedIn && token) {
       fetchUsers();
     }
-  }, [isLoggedIn, token, search, planFilter]);
+  }, [isLoggedIn, token, search, planFilter, archivedFilter]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -94,6 +99,7 @@ export default function AdminDashboard() {
         limit: '20',
         ...(search && { search }),
         ...(planFilter !== 'all' && { plan: planFilter }),
+        archived: archivedFilter,
       });
 
       const res = await fetch(`/api/admin/users?${params}`, {
@@ -110,6 +116,7 @@ export default function AdminDashboard() {
       setUsers(data.users || []);
       setPagination(data.pagination);
       setStats(data.stats);
+      setArchivedCount(data.archivedCount || 0);
     } catch (err) {
       console.error('Failed to fetch users:', err);
     }
@@ -159,6 +166,87 @@ export default function AdminDashboard() {
       }
     } catch (err) {
       alert('Failed to toggle VIP');
+    }
+  };
+
+  const changePlan = async (user: User, newPlan: 'free' | 'pro') => {
+    if (!confirm(`Change ${user.email} to ${newPlan.toUpperCase()} plan?`)) return;
+    
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ planType: newPlan }),
+      });
+
+      if (res.ok) {
+        alert(`Changed ${user.email} to ${newPlan.toUpperCase()}`);
+        fetchUsers();
+      } else {
+        alert('Failed to change plan');
+      }
+    } catch (err) {
+      alert('Failed to change plan');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const archiveUser = async (user: User) => {
+    const action = user.isArchived ? 'restore' : 'archive';
+    if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} ${user.email}?`)) return;
+    
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ archived: !user.isArchived }),
+      });
+
+      if (res.ok) {
+        alert(`Account ${action}d successfully`);
+        fetchUsers();
+      } else {
+        alert(`Failed to ${action} account`);
+      }
+    } catch (err) {
+      alert(`Failed to ${action} account`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const deleteUser = async (user: User) => {
+    if (!confirm(`⚠️ PERMANENTLY DELETE ${user.email}?\n\nThis cannot be undone!`)) return;
+    if (!confirm(`Are you SURE? Type the email to confirm:\n${user.email}`)) return;
+    
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (res.ok) {
+        alert(`Deleted ${user.email} permanently`);
+        fetchUsers();
+      } else {
+        alert('Failed to delete account');
+      }
+    } catch (err) {
+      alert('Failed to delete account');
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -237,7 +325,7 @@ export default function AdminDashboard() {
 
       {/* Stats */}
       {stats && (
-        <div className="px-6 py-4 grid grid-cols-2 gap-4">
+        <div className="px-6 py-4 grid grid-cols-4 gap-4">
           <div className="bg-gray-800 p-4 rounded-xl">
             <div className="text-gray-400 text-sm">Free Users</div>
             <div className="text-2xl font-bold text-green-400">{stats.free || 0}</div>
@@ -246,17 +334,25 @@ export default function AdminDashboard() {
             <div className="text-gray-400 text-sm">Pro Users</div>
             <div className="text-2xl font-bold text-blue-400">{stats.pro || 0}</div>
           </div>
+          <div className="bg-gray-800 p-4 rounded-xl">
+            <div className="text-gray-400 text-sm">Total Users</div>
+            <div className="text-2xl font-bold text-white">{pagination?.total || 0}</div>
+          </div>
+          <div className="bg-gray-800 p-4 rounded-xl">
+            <div className="text-gray-400 text-sm">Archived</div>
+            <div className="text-2xl font-bold text-orange-400">{archivedCount}</div>
+          </div>
         </div>
       )}
 
       {/* Filters */}
-      <div className="px-6 py-4 flex gap-4">
+      <div className="px-6 py-4 flex gap-4 flex-wrap">
         <input
           type="text"
           placeholder="Search by email..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="flex-1 px-4 py-2 bg-gray-800 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+          className="flex-1 min-w-[200px] px-4 py-2 bg-gray-800 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
         />
         <select
           value={planFilter}
@@ -267,38 +363,70 @@ export default function AdminDashboard() {
           <option value="free">Free</option>
           <option value="pro">Pro</option>
         </select>
+        <select
+          value={archivedFilter}
+          onChange={(e) => setArchivedFilter(e.target.value)}
+          className="px-4 py-2 bg-gray-800 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+        >
+          <option value="false">Active Only</option>
+          <option value="true">Archived Only</option>
+          <option value="all">All Users</option>
+        </select>
       </div>
 
       {/* Users Table */}
       <div className="px-6">
-        <div className="bg-gray-800 rounded-xl overflow-hidden">
-          <table className="w-full">
+        <div className="bg-gray-800 rounded-xl overflow-hidden overflow-x-auto">
+          <table className="w-full min-w-[900px]">
             <thead className="bg-gray-700">
               <tr>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">Email</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">Plan</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">Credits</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">Bonus</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">VIP</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">Status</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
               {users.map((user) => (
-                <tr key={user.id} className="hover:bg-gray-750">
+                <tr key={user.id} className={`hover:bg-gray-750 ${user.isArchived ? 'opacity-60' : ''}`}>
                   <td className="px-4 py-3">
                     <div className="font-medium">{user.email}</div>
                     {user.adminNotes && (
                       <div className="text-xs text-gray-400">{user.adminNotes}</div>
                     )}
+                    {user.isArchived && (
+                      <div className="text-xs text-orange-400">
+                        📦 Archived: {new Date(user.archivedAt!).toLocaleDateString()}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-1 rounded text-xs font-medium ${
-                      user.planType === 'pro' ? 'bg-blue-600' :
-                      user.planType === 'unlimited' ? 'bg-purple-600' : 'bg-gray-600'
-                    }`}>
-                      {user.planType.toUpperCase()}
-                    </span>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => changePlan(user, 'free')}
+                        disabled={actionLoading || user.planType === 'free'}
+                        className={`px-2 py-1 rounded text-xs font-medium transition ${
+                          user.planType === 'free' 
+                            ? 'bg-gray-600 cursor-default' 
+                            : 'bg-gray-700 hover:bg-gray-600 cursor-pointer'
+                        }`}
+                      >
+                        FREE
+                      </button>
+                      <button
+                        onClick={() => changePlan(user, 'pro')}
+                        disabled={actionLoading || user.planType === 'pro'}
+                        className={`px-2 py-1 rounded text-xs font-medium transition ${
+                          user.planType === 'pro' 
+                            ? 'bg-blue-600 cursor-default' 
+                            : 'bg-gray-700 hover:bg-blue-600 cursor-pointer'
+                        }`}
+                      >
+                        PRO
+                      </button>
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     {user.monthlyCredits - user.monthlyCreditsUsed} / {user.monthlyCredits}
@@ -307,22 +435,44 @@ export default function AdminDashboard() {
                     <span className="text-yellow-400">⭐ {user.bonusCredits}</span>
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      onClick={() => toggleVip(user)}
-                      className={`px-2 py-1 rounded text-xs ${
-                        user.isVip ? 'bg-yellow-600' : 'bg-gray-600'
-                      }`}
-                    >
-                      {user.isVip ? '⭐ VIP' : 'Regular'}
-                    </button>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => toggleVip(user)}
+                        className={`px-2 py-1 rounded text-xs ${
+                          user.isVip ? 'bg-yellow-600' : 'bg-gray-600 hover:bg-gray-500'
+                        }`}
+                      >
+                        {user.isVip ? '⭐ VIP' : 'Regular'}
+                      </button>
+                    </div>
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      onClick={() => setSelectedUser(user)}
-                      className="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm transition"
-                    >
-                      + Credits
-                    </button>
+                    <div className="flex gap-1 flex-wrap">
+                      <button
+                        onClick={() => setSelectedUser(user)}
+                        className="px-2 py-1 bg-green-600 hover:bg-green-700 rounded text-xs transition"
+                      >
+                        + Credits
+                      </button>
+                      <button
+                        onClick={() => archiveUser(user)}
+                        disabled={actionLoading}
+                        className={`px-2 py-1 rounded text-xs transition ${
+                          user.isArchived 
+                            ? 'bg-blue-600 hover:bg-blue-700' 
+                            : 'bg-orange-600 hover:bg-orange-700'
+                        }`}
+                      >
+                        {user.isArchived ? '↩️ Restore' : '📦 Archive'}
+                      </button>
+                      <button
+                        onClick={() => deleteUser(user)}
+                        disabled={actionLoading}
+                        className="px-2 py-1 bg-red-600 hover:bg-red-700 rounded text-xs transition"
+                      >
+                        🗑️ Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -358,7 +508,7 @@ export default function AdminDashboard() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm text-gray-300 mb-2">Credits Amount</label>
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                   {[25, 50, 100, 250, 500].map((amount) => (
                     <button
                       key={amount}
@@ -412,4 +562,3 @@ export default function AdminDashboard() {
     </div>
   );
 }
-
