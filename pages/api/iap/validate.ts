@@ -27,6 +27,14 @@ export default async function handler(
     const user = await requireAuth(req);
     
     const { productId, transactionId, originalTransactionId } = req.body;
+    
+    console.log('📦 IAP Validate Request:', { 
+      userId: user.id, 
+      productId, 
+      transactionId,
+      originalTransactionId,
+      isPro: productId === PRO_MONTHLY_PRODUCT_ID 
+    });
 
     if (!productId || !transactionId) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -54,8 +62,16 @@ export default async function handler(
     let creditsToAdd = 0;
     let isSubscription = false;
 
+    console.log('🔍 Checking product ID:', { 
+      productId, 
+      PRO_MONTHLY_PRODUCT_ID, 
+      isMatch: productId === PRO_MONTHLY_PRODUCT_ID,
+      inCreditProducts: !!PRODUCT_CREDITS[productId]
+    });
+
     if (productId === PRO_MONTHLY_PRODUCT_ID) {
       // Pro subscription
+      console.log('🎯 Processing Pro subscription purchase');
       isSubscription = true;
       creditsToAdd = PRO_MONTHLY_CREDITS;
       
@@ -94,7 +110,8 @@ export default async function handler(
       
       console.log(`✅ Added ${creditsToAdd} bonus credits to user ${user.id}`);
     } else {
-      return res.status(400).json({ error: 'Unknown product ID' });
+      console.error('❌ Unknown product ID:', productId);
+      return res.status(400).json({ error: `Unknown product ID: ${productId}` });
     }
 
     // Record the transaction
