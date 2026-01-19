@@ -40,21 +40,38 @@ export default async function handler(
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Check if this transaction was already processed
+    // Check if this transaction was already processed FOR THIS USER
+    // We check by user_id AND transaction_id because:
+    // - Same Apple ID subscription can be synced to multiple app accounts
+    // - But we don't want to process the same transaction twice for the same user
     const { data: existingTransaction } = await supabaseAdmin
       .from('iap_transactions')
       .select('id')
       .eq('transaction_id', transactionId)
+      .eq('user_id', user.id)
       .single();
 
     if (existingTransaction) {
-      // Transaction already processed - return current credits and plan
+      // Transaction already processed for THIS user - return current credits and plan
+      console.log(`Transaction ${transactionId} already processed for user ${user.id}`);
       const credits = await getAvailableCredits(user.id);
       return res.status(200).json({
         success: true,
         message: 'Transaction already processed',
         credits: credits,
-        planType: user.plan_type,  // Include current plan type
+        planType: user.plan_type,
+      });
+    }
+    
+    // For subscriptions: check if this user is already Pro (might have been synced via different transaction)
+    if (productId === PRO_MONTHLY_PRODUCT_ID && user.plan_type === 'pro') {
+      console.log(`User ${user.id} is already Pro`);
+      const credits = await getAvailableCredits(user.id);
+      return res.status(200).json({
+        success: true,
+        message: 'User is already Pro',
+        credits: credits,
+        planType: 'pro',
       });
     }
 
