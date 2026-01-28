@@ -193,7 +193,6 @@ export async function logUsage(
   });
 }
 
-
 // Guest tracking functions
 export async function logGuestUsage(
   deviceId: string,
@@ -283,32 +282,4 @@ export async function linkGuestDataToUser(deviceId: string, userId: string): Pro
     .from('guest_credits')
     .update({ converted_user_id: userId })
     .eq('device_id', deviceId);
-}
-
-export async function markDeviceReceivedInitialCredits(deviceId: string): Promise<void> {
-  // Mark that this device has received initial free credits
-  const { data: existing } = await supabaseAdmin
-    .from('guest_credits')
-    .select('device_id')
-    .eq('device_id', deviceId)
-    .single();
-  
-  if (existing) {
-    // Update existing record
-    await supabaseAdmin
-      .from('guest_credits')
-      .update({ has_received_initial_credits: true })
-      .eq('device_id', deviceId);
-  } else {
-    // Create new record
-    await supabaseAdmin
-      .from('guest_credits')
-      .insert({
-        device_id: deviceId,
-        has_received_initial_credits: true,
-        total_credits_used: 0,
-        requests_today: 0,
-        last_request_date: new Date().toISOString().split('T')[0]
-      });
-  }
 }
