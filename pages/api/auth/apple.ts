@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { verifyAppleToken, getOrCreateAppleUser, generateToken } from '@/lib/auth';
-import { supabaseAdmin } from '@/lib/supabase';
+import { supabaseAdmin, linkGuestDataToUser, getGuestCredit } from '@/lib/supabase';
 
 // Archive duration - accounts are permanently deleted after this period
 const ARCHIVE_DURATION_DAYS = 30;
@@ -18,7 +18,7 @@ export default async function handler(
       identityToken, 
       email: providedEmail, 
       fullName, 
-      localCreditsToMerge, 
+      localBonusCreditsToMerge,       // Credits from individual purchases (100/500 packs)
       deviceId,
       localProOriginalTransactionId,  // Local Pro subscription transaction ID
       localProCreditsRemaining        // How many Pro credits user has left locally
@@ -71,16 +71,21 @@ export default async function handler(
         
         console.log(`🔄 Apple account ${existingUser.id} (${email}) restored from archive!`);
         
-        // Merge any local credits
-        if (localCreditsToMerge && localCreditsToMerge > 0) {
+        // Merge any local bonus credits (from purchases only, not free credits)
+        if (localBonusCreditsToMerge && localBonusCreditsToMerge > 0) {
           await supabaseAdmin
             .from('users')
             .update({
-              bonus_credits: existingUser.bonus_credits + localCreditsToMerge,
+              bonus_credits: existingUser.bonus_credits + localBonusCreditsToMerge,
             })
             .eq('id', existingUser.id);
           
-          existingUser.bonus_credits += localCreditsToMerge;
+          existingUser.bonus_credits += localBonusCreditsToMerge;
+        }
+        
+        // Link guest data to this user
+        if (deviceId) {
+          await linkGuestDataToUser(deviceId, existingUser.id);
         }
         
         // Clear archived_at for response
@@ -107,28 +112,62 @@ export default async function handler(
     
     const isExistingUser = !!existingUser && !existingUser.archived_at;
     
-    // Get or create user (passes localCreditsToMerge for new users only)
+    // Check if this device has already received initial free credits
+    let deviceAlreadyGotCredits = false;
+    if (deviceId) {
+      const guestCredit = await getGuestCredit(deviceId);
+      deviceAlreadyGotCredits = guestCredit?.has_received_initial_credits || false;
+    }
+    
+    // Get or create user (passes localBonusCreditsToMerge for new users only if device hasn't got credits)
+    const creditsForNewUser = (!isExistingUser && !deviceAlreadyGotCredits && localBonusCreditsToMerge) ? localBonusCreditsToMerge : undefined;
     const user = await getOrCreateAppleUser(
       appleData.appleUserId, 
       email, 
-      isExistingUser ? undefined : localCreditsToMerge
+      creditsForNewUser
     );
     
-    // If there are local credits to merge for EXISTING user, add them now
-    if (isExistingUser && localCreditsToMerge && localCreditsToMerge > 0) {
-      const { error: updateError } = await supabaseAdmin
+    // Mark new user as having received initial credits
+    if (!isExistingUser) {
+      await supabaseAdmin
         .from('users')
-        .update({
-          bonus_credits: user.bonus_credits + localCreditsToMerge,
-        })
+        .update({ has_received_initial_credits: true })
         .eq('id', user.id);
+      user.has_received_initial_credits = true;
+    }
+    
+    // If there are local credits to merge for EXISTING user, add them now
+    if (isExistingUser && localBonusCreditsToMerge && localBonusCreditsToMerge > 0) {
+      let creditsToMerge = localBonusCreditsToMerge;
       
-      if (updateError) {
-        console.error('Failed to merge local credits for Apple user:', updateError);
-      } else {
-        user.bonus_credits += localCreditsToMerge;
-        console.log(`✅ Merged ${localCreditsToMerge} local credits for existing Apple user ${user.id}`);
+      // If user already received initial credits and device also got them,
+      // don't merge the first 50 credits (prevent exploit)
+      if (user.has_received_initial_credits && deviceAlreadyGotCredits && localBonusCreditsToMerge === 50) {
+        console.log(`⚠️ Apple user ${user.id} and device already received initial credits. Skipping merge.`);
+        creditsToMerge = 0;
       }
+      
+      if (creditsToMerge > 0) {
+        const { error: updateError } = await supabaseAdmin
+          .from('users')
+          .update({
+            bonus_credits: user.bonus_credits + creditsToMerge,
+          })
+          .eq('id', user.id);
+        
+        if (updateError) {
+          console.error('Failed to merge local credits for Apple user:', updateError);
+        } else {
+          user.bonus_credits += creditsToMerge;
+          console.log(`✅ Merged ${creditsToMerge} local credits for existing Apple user ${user.id}`);
+        }
+      }
+    }
+    
+    // Link guest data to this user
+    if (deviceId) {
+      await linkGuestDataToUser(deviceId, user.id);
+      console.log(`✅ Linked guest data from device ${deviceId} to user ${user.id}`);
     }
     
     // Sync local Pro subscription if exists

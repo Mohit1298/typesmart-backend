@@ -34,7 +34,10 @@ CREATE TABLE users (
     -- Metadata
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    last_active_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    last_active_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    -- Track if user already received initial free credits (prevent exploit)
+    has_received_initial_credits BOOLEAN DEFAULT FALSE
 );
 
 -- Index for faster lookups
@@ -82,6 +85,60 @@ CREATE TABLE usage_logs (
 
 CREATE INDEX idx_usage_user ON usage_logs(user_id);
 CREATE INDEX idx_usage_date ON usage_logs(created_at);
+
+-- =============================================
+-- GUEST USAGE LOGS TABLE
+-- =============================================
+CREATE TABLE guest_usage_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    device_id TEXT NOT NULL,
+    
+    request_type TEXT NOT NULL CHECK (request_type IN ('rephrase', 'generate', 'grammar', 'formal', 'casual', 'analyze', 'reply', 'extract', 'custom')),
+    has_image BOOLEAN DEFAULT FALSE,
+    
+    credits_used INT NOT NULL,
+    tokens_input INT,
+    tokens_output INT,
+    
+    -- For billing/analytics
+    cost_usd DECIMAL(10, 6),
+    
+    -- Track if this guest later signed up
+    converted_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_guest_usage_device ON guest_usage_logs(device_id);
+CREATE INDEX idx_guest_usage_date ON guest_usage_logs(created_at);
+CREATE INDEX idx_guest_usage_converted ON guest_usage_logs(converted_user_id);
+
+-- =============================================
+-- GUEST CREDITS TABLE
+-- =============================================
+CREATE TABLE guest_credits (
+    device_id TEXT PRIMARY KEY,
+    
+    -- Track credits used (for analytics)
+    total_credits_used INT DEFAULT 0,
+    
+    -- Track if this device already received initial free credits (prevent exploit)
+    has_received_initial_credits BOOLEAN DEFAULT FALSE,
+    
+    -- Track if this guest converted to a user
+    converted_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    
+    -- Metadata
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    last_used_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    -- Optional: Rate limiting (requests per day)
+    requests_today INT DEFAULT 0,
+    last_request_date DATE DEFAULT CURRENT_DATE
+);
+
+CREATE INDEX idx_guest_credits_converted ON guest_credits(converted_user_id);
+CREATE INDEX idx_guest_credits_last_used ON guest_credits(last_used_at);
 
 -- =============================================
 -- SUBSCRIPTIONS TABLE
@@ -210,6 +267,8 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE credit_adjustments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE guest_usage_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE guest_credits ENABLE ROW LEVEL SECURITY;
 
 -- Users can only read their own data
 CREATE POLICY "Users can view own data" ON users
@@ -223,6 +282,12 @@ CREATE POLICY "Service role full access logs" ON usage_logs
     FOR ALL USING (auth.role() = 'service_role');
 
 CREATE POLICY "Service role full access adjustments" ON credit_adjustments
+    FOR ALL USING (auth.role() = 'service_role');
+
+CREATE POLICY "Service role full access guest logs" ON guest_usage_logs
+    FOR ALL USING (auth.role() = 'service_role');
+
+CREATE POLICY "Service role full access guest credits" ON guest_credits
     FOR ALL USING (auth.role() = 'service_role');
 
 -- =============================================

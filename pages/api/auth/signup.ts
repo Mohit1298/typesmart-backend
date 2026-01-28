@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { supabaseAdmin } from '@/lib/supabase';
+import { supabaseAdmin, linkGuestDataToUser, getGuestCredit } from '@/lib/supabase';
 import { hashPassword, generateToken, verifyAppleToken } from '@/lib/auth';
 
 // Archive duration - accounts are permanently deleted after this period
@@ -14,7 +14,13 @@ export default async function handler(
   }
 
   try {
-    const { email, password, localCreditsToMerge, deviceId, appleIdentityToken } = req.body;
+    const { 
+      email, 
+      password, 
+      localBonusCreditsToMerge,  // Credits from individual purchases (100/500 packs)
+      deviceId, 
+      appleIdentityToken 
+    } = req.body;
     
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
@@ -53,16 +59,21 @@ export default async function handler(
         
         console.log(`🔄 Account ${existingUser.id} (${email}) restored from archive!`);
         
-        // Merge any local credits
-        if (localCreditsToMerge && localCreditsToMerge > 0) {
+        // Merge any local bonus credits (from purchases only, not free credits)
+        if (localBonusCreditsToMerge && localBonusCreditsToMerge > 0) {
           await supabaseAdmin
             .from('users')
             .update({
-              bonus_credits: existingUser.bonus_credits + localCreditsToMerge,
+              bonus_credits: existingUser.bonus_credits + localBonusCreditsToMerge,
             })
             .eq('id', existingUser.id);
           
-          existingUser.bonus_credits += localCreditsToMerge;
+          existingUser.bonus_credits += localBonusCreditsToMerge;
+        }
+        
+        // Link guest data to this user
+        if (deviceId) {
+          await linkGuestDataToUser(deviceId, existingUser.id);
         }
         
         // Generate token for restored account
@@ -90,6 +101,13 @@ export default async function handler(
       return res.status(400).json({ error: 'Email already registered' });
     }
     
+    // Check if this device has already received initial free credits (prevent exploit)
+    let deviceAlreadyGotCredits = false;
+    if (deviceId) {
+      const guestCredit = await getGuestCredit(deviceId);
+      deviceAlreadyGotCredits = guestCredit?.has_received_initial_credits || false;
+    }
+    
     // Determine if signup email matches device's Apple ID
     let emailMatchesAppleId = false;
     
@@ -101,11 +119,14 @@ export default async function handler(
       }
     }
     
-    // Give 50 free credits only if email matches Apple ID
-    const initialMonthlyCredits = emailMatchesAppleId ? 50 : 0;
-    const initialBonusCredits = localCreditsToMerge && localCreditsToMerge > 0 ? localCreditsToMerge : 0;
+    // Give 50 free credits only if:
+    // 1. Email matches Apple ID, AND
+    // 2. Device hasn't already received free credits (prevent reinstall exploit)
+    const shouldGiveFreeCredits = emailMatchesAppleId && !deviceAlreadyGotCredits;
+    const initialMonthlyCredits = shouldGiveFreeCredits ? 50 : 0;
+    const initialBonusCredits = localBonusCreditsToMerge && localBonusCreditsToMerge > 0 ? localBonusCreditsToMerge : 0;
     
-    console.log(`📝 Email signup: ${email} - Apple verified: ${emailMatchesAppleId} - Monthly: ${initialMonthlyCredits}, Bonus: ${initialBonusCredits}`);
+    console.log(`📝 Email signup: ${email} - Apple verified: ${emailMatchesAppleId} - Device already got credits: ${deviceAlreadyGotCredits} - Monthly: ${initialMonthlyCredits}, Bonus: ${initialBonusCredits}`);
     
     // Create user
     const { data: user, error } = await supabaseAdmin
@@ -116,6 +137,7 @@ export default async function handler(
         plan_type: 'free',
         monthly_credits: initialMonthlyCredits,
         bonus_credits: initialBonusCredits,
+        has_received_initial_credits: shouldGiveFreeCredits,  // Mark if user got free credits
       })
       .select()
       .single();
@@ -124,8 +146,14 @@ export default async function handler(
       throw error;
     }
     
-    if (localCreditsToMerge && localCreditsToMerge > 0) {
-      console.log(`New user ${user.id} created with ${localCreditsToMerge} merged local credits`);
+    if (localBonusCreditsToMerge && localBonusCreditsToMerge > 0) {
+      console.log(`New user ${user.id} created with ${localBonusCreditsToMerge} merged local credits`);
+    }
+    
+    // Link guest data to this new user
+    if (deviceId) {
+      await linkGuestDataToUser(deviceId, user.id);
+      console.log(`✅ Linked guest data from device ${deviceId} to user ${user.id}`);
     }
     
     // Generate token

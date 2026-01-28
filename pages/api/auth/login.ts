@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getUserByEmail, supabaseAdmin } from '@/lib/supabase';
+import { getUserByEmail, supabaseAdmin, linkGuestDataToUser, getGuestCredit } from '@/lib/supabase';
 import { verifyPassword, generateToken, hashPassword } from '@/lib/auth';
 
 // Archive duration - accounts are permanently deleted after this period
@@ -14,7 +14,12 @@ export default async function handler(
   }
 
   try {
-    const { email, password, localCreditsToMerge, deviceId } = req.body;
+    const { 
+      email, 
+      password, 
+      localBonusCreditsToMerge,  // Credits from individual purchases (100/500 packs)
+      deviceId 
+    } = req.body;
     
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
@@ -53,22 +58,49 @@ export default async function handler(
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     
-    // Merge local credits if provided
-    if (localCreditsToMerge && localCreditsToMerge > 0) {
-      const { error: updateError } = await supabaseAdmin
-        .from('users')
-        .update({
-          bonus_credits: user.bonus_credits + localCreditsToMerge,
-        })
-        .eq('id', user.id);
+    // Check if this device has already received initial free credits
+    let deviceAlreadyGotCredits = false;
+    if (deviceId) {
+      const guestCredit = await getGuestCredit(deviceId);
+      deviceAlreadyGotCredits = guestCredit?.has_received_initial_credits || false;
+    }
+    
+    // Merge local bonus credits if provided (from purchases only, not free credits)
+    // Only merge if:
+    // 1. User hasn't already received initial credits (server-side check), OR
+    // 2. The credits are from actual purchases (> 50 credits)
+    if (localBonusCreditsToMerge && localBonusCreditsToMerge > 0) {
+      let creditsToMerge = localBonusCreditsToMerge;
       
-      if (updateError) {
-        console.error('Failed to merge local credits:', updateError);
-      } else {
-        // Update user object for response
-        user.bonus_credits += localCreditsToMerge;
-        console.log(`✅ Merged ${localCreditsToMerge} local credits for user ${user.id}. New bonus: ${user.bonus_credits}`);
+      // If user already received initial credits and device also got them,
+      // don't merge the first 50 credits (prevent exploit)
+      if (user.has_received_initial_credits && deviceAlreadyGotCredits && localBonusCreditsToMerge === 50) {
+        console.log(`⚠️ User ${user.id} and device already received initial credits. Skipping merge.`);
+        creditsToMerge = 0;
       }
+      
+      if (creditsToMerge > 0) {
+        const { error: updateError } = await supabaseAdmin
+          .from('users')
+          .update({
+            bonus_credits: user.bonus_credits + creditsToMerge,
+          })
+          .eq('id', user.id);
+        
+        if (updateError) {
+          console.error('Failed to merge local credits:', updateError);
+        } else {
+          // Update user object for response
+          user.bonus_credits += creditsToMerge;
+          console.log(`✅ Merged ${creditsToMerge} local credits for user ${user.id}. New bonus: ${user.bonus_credits}`);
+        }
+      }
+    }
+    
+    // Link guest data to this user
+    if (deviceId) {
+      await linkGuestDataToUser(deviceId, user.id);
+      console.log(`✅ Linked guest data from device ${deviceId} to user ${user.id}`);
     }
     
     // Generate token

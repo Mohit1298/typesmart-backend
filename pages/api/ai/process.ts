@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { authenticateRequest } from '@/lib/auth';
-import { getAvailableCredits, deductCredits, logUsage } from '@/lib/supabase';
+import { getAvailableCredits, deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '@/lib/supabase';
 import { processAIRequest, AI_PROMPTS, CREDIT_COSTS } from '@/lib/openai';
 
 type ActionType = 
@@ -126,18 +126,15 @@ export default async function handler(
     
     let newCredits = 0;
     
-    // Only deduct and log for logged-in users
-    // Guests manage their credits locally on device
+    // Calculate approximate cost (for analytics)
+    const costPerInputToken = aiResponse.model === 'gpt-4o' ? 0.005 / 1000 : 0.00015 / 1000;
+    const costPerOutputToken = aiResponse.model === 'gpt-4o' ? 0.015 / 1000 : 0.0006 / 1000;
+    const costUsd = (aiResponse.tokensInput * costPerInputToken) + (aiResponse.tokensOutput * costPerOutputToken);
+    
     if (user) {
-      // Deduct credits
+      // Logged-in user: Deduct credits and log usage
       await deductCredits(user.id, creditCost);
       
-      // Calculate approximate cost (for analytics)
-      const costPerInputToken = aiResponse.model === 'gpt-4o' ? 0.005 / 1000 : 0.00015 / 1000;
-      const costPerOutputToken = aiResponse.model === 'gpt-4o' ? 0.015 / 1000 : 0.0006 / 1000;
-      const costUsd = (aiResponse.tokensInput * costPerInputToken) + (aiResponse.tokensOutput * costPerOutputToken);
-      
-      // Log usage
       await logUsage(
         user.id,
         action,
@@ -150,6 +147,20 @@ export default async function handler(
       
       // Get updated credit balance
       newCredits = await getAvailableCredits(user.id);
+    } else if (deviceId) {
+      // Guest user: Track usage and update guest_credits table
+      await logGuestUsage(
+        deviceId,
+        action,
+        hasImage,
+        creditCost,
+        aiResponse.tokensInput,
+        aiResponse.tokensOutput,
+        costUsd
+      );
+      
+      // Update guest credit tracking
+      await getOrCreateGuestCredit(deviceId, creditCost);
     }
     
     return res.status(200).json({
