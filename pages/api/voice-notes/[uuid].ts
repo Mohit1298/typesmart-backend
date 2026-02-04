@@ -23,14 +23,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const shortCode = uuid.substring(0, 8).toLowerCase();
       console.log('🔍 Short code:', shortCode);
       
+      // UUID columns need text cast for pattern matching
+      // Use raw filter with textual comparison
       const result = await supabaseAdmin
         .from('voice_notes')
         .select('*')
-        .ilike('id', `${shortCode}%`)
+        .filter('id::text', 'ilike', `${shortCode}%`)
         .order('created_at', { ascending: false })
         .limit(1);
       
-      console.log('📊 Found:', result.data?.length);
+      console.log('📊 Found:', result.data?.length, 'error:', result.error?.message);
       if (result.data && result.data.length > 0) {
         voiceNote = result.data[0];
       }
