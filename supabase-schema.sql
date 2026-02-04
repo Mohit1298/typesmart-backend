@@ -141,6 +141,31 @@ CREATE INDEX idx_guest_credits_converted ON guest_credits(converted_user_id);
 CREATE INDEX idx_guest_credits_last_used ON guest_credits(last_used_at);
 
 -- =============================================
+-- VOICE NOTES TABLE
+-- =============================================
+CREATE TABLE voice_notes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    device_id TEXT,  -- For guests
+    
+    storage_path TEXT NOT NULL,
+    file_size_bytes INT NOT NULL,
+    duration_seconds DECIMAL(10, 2),
+    
+    download_count INT DEFAULT 0,
+    max_downloads INT DEFAULT NULL,  -- NULL = unlimited
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '30 days'),
+    last_accessed_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX idx_voice_notes_uuid ON voice_notes(id);
+CREATE INDEX idx_voice_notes_user ON voice_notes(user_id);
+CREATE INDEX idx_voice_notes_device ON voice_notes(device_id);
+CREATE INDEX idx_voice_notes_expires ON voice_notes(expires_at);
+
+-- =============================================
 -- SUBSCRIPTIONS TABLE
 -- =============================================
 CREATE TABLE subscriptions (
@@ -269,6 +294,7 @@ ALTER TABLE usage_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guest_usage_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guest_credits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE voice_notes ENABLE ROW LEVEL SECURITY;
 
 -- Users can only read their own data
 CREATE POLICY "Users can view own data" ON users
@@ -288,6 +314,14 @@ CREATE POLICY "Service role full access guest logs" ON guest_usage_logs
     FOR ALL USING (auth.role() = 'service_role');
 
 CREATE POLICY "Service role full access guest credits" ON guest_credits
+    FOR ALL USING (auth.role() = 'service_role');
+
+-- Voice notes: Anyone can read with UUID (no auth required)
+CREATE POLICY "Anyone can read voice notes" ON voice_notes
+    FOR SELECT USING (true);
+
+-- Only service role can insert/update voice notes
+CREATE POLICY "Service role can manage voice notes" ON voice_notes
     FOR ALL USING (auth.role() = 'service_role');
 
 -- =============================================

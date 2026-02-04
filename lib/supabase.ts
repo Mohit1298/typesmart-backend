@@ -267,9 +267,7 @@ export async function getGuestCredit(deviceId: string): Promise<GuestCredit | nu
     .single();
   
   return data;
-}
-
-export async function linkGuestDataToUser(deviceId: string, userId: string): Promise<void> {
+}export async function linkGuestDataToUser(deviceId: string, userId: string): Promise<void> {
   // Link all guest usage logs to the user
   await supabaseAdmin
     .from('guest_usage_logs')
