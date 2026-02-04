@@ -23,18 +23,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const shortCode = uuid.substring(0, 8).toLowerCase();
       console.log('🔍 Short code:', shortCode);
       
-      // UUID columns need text cast for pattern matching
-      // Use raw filter with textual comparison
+      // Fetch recent records and filter by UUID prefix in JavaScript
+      // (Supabase doesn't support pattern matching on UUID columns directly)
       const result = await supabaseAdmin
         .from('voice_notes')
         .select('*')
-        .filter('id::text', 'ilike', `${shortCode}%`)
         .order('created_at', { ascending: false })
-        .limit(1);
+        .limit(100);
       
-      console.log('📊 Found:', result.data?.length, 'error:', result.error?.message);
-      if (result.data && result.data.length > 0) {
-        voiceNote = result.data[0];
+      if (result.data) {
+        voiceNote = result.data.find(vn => 
+          vn.id.toLowerCase().startsWith(shortCode)
+        );
+        console.log('📊 Searched', result.data.length, 'records, found:', voiceNote ? voiceNote.id : 'none');
       }
     } else {
       return res.status(400).json({ success: false, error: 'Code too short' });
