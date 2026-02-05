@@ -207,23 +207,24 @@ export async function generateVoiceResponses(
   transcription: string,
   count: number
 ): Promise<string[]> {
-  const systemPrompt = `You are helping a user rephrase their voice message. They recorded a message but want to say it differently. Generate exactly ${count} alternative ways to express the SAME message.
+  const systemPrompt = `You help users rephrase their voice messages. Generate exactly ${count} alternative ways to say the same thing.
 
-Rules:
-1. Keep the SAME meaning and intent as the original message
-2. Each alternative should be 1-3 sentences, suitable for a voice note
-3. Vary the style: one more casual, one more polished, one more friendly/warm
-4. Do NOT change the core message - just rephrase HOW it's said
-5. Do NOT include quotation marks around alternatives
-6. Do NOT number the alternatives
-7. Separate each alternative with "---"
-8. Keep it natural and conversational, as if speaking to a friend
-9. Match the general length of the original message
+CRITICAL FORMAT RULES:
+- Output ONLY the alternatives, nothing else
+- Put each alternative on its own line
+- Start each line with the number followed by a period (1. 2. 3.)
+- Do NOT add any intro text, explanations, or commentary
+- Do NOT use quotation marks
 
-The user recorded this voice message:
-"${transcription}"
+CONTENT RULES:
+- Keep the SAME meaning and intent
+- Each should be 1-3 sentences, suitable for a voice message
+- Vary the tone: casual, polished, warm/friendly
+- Match the approximate length of the original
 
-Generate ${count} different ways to say the same thing:`;
+Original message: "${transcription}"
+
+Output exactly ${count} numbered alternatives:`;
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
@@ -231,24 +232,45 @@ Generate ${count} different ways to say the same thing:`;
       { role: 'system', content: systemPrompt },
     ],
     max_tokens: 500,
-    temperature: 0.8, // Higher temperature for variety
+    temperature: 0.7,
   });
 
   const content = response.choices[0].message.content || '';
+  console.log('GPT raw response:', content);
   
-  // Split by "---" and clean up
-  const responses = content
-    .split('---')
-    .map(r => r.trim())
-    .filter(r => r.length > 0)
-    .slice(0, count); // Ensure we don't exceed requested count
-
-  // If we didn't get enough responses, fill with the content as a single response
+  // Parse numbered responses (1. 2. 3. format)
+  const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const responses: string[] = [];
+  
+  for (const line of lines) {
+    // Match lines starting with number and period: "1." "2." "3." etc
+    const match = line.match(/^\d+\.\s*(.+)$/);
+    if (match) {
+      // Remove any quotes around the text
+      let text = match[1].trim();
+      text = text.replace(/^["']|["']$/g, '');
+      if (text.length > 0) {
+        responses.push(text);
+      }
+    }
+  }
+  
+  // If numbered parsing failed, try splitting by common separators
   if (responses.length === 0) {
+    const fallbackResponses = content
+      .split(/---|\n\n/)
+      .map(r => r.trim().replace(/^["']|["']$/g, ''))
+      .filter(r => r.length > 0 && !r.match(/^(here|alternative|option)/i));
+    
+    if (fallbackResponses.length > 0) {
+      return fallbackResponses.slice(0, count);
+    }
+    
+    // Last resort: return the whole content as one response
     return [content.trim()];
   }
 
-  return responses;
+  return responses.slice(0, count);
 }
 
 /**
