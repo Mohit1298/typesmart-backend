@@ -93,11 +93,21 @@ export default async function handler(
     console.log('Processing AI voice request...');
     console.log('- Response count:', count);
     console.log('- Credit cost:', creditCost);
+    console.log('- Filename:', filename);
+    console.log('- Audio buffer size:', audioBuffer.length);
 
     // Step 1: Transcribe audio using Whisper
     console.log('Step 1: Transcribing audio...');
-    const transcription = await transcribeAudio(audioBuffer, filename);
-    console.log('Transcription:', transcription);
+    let transcription: string;
+    try {
+      transcription = await transcribeAudio(audioBuffer, filename);
+      console.log('Transcription:', transcription);
+    } catch (transcribeError: any) {
+      console.error('Transcription failed:', transcribeError);
+      return res.status(500).json({
+        error: `Transcription failed: ${transcribeError.message}`,
+      });
+    }
 
     if (!transcription || transcription.trim().length === 0) {
       return res.status(400).json({
@@ -107,8 +117,22 @@ export default async function handler(
 
     // Step 2: Generate response texts using GPT-4
     console.log('Step 2: Generating response texts...');
-    const responseTexts = await generateVoiceResponses(transcription, count);
-    console.log('Generated responses:', responseTexts);
+    let responseTexts: string[];
+    try {
+      responseTexts = await generateVoiceResponses(transcription, count);
+      console.log('Generated responses:', responseTexts);
+    } catch (gptError: any) {
+      console.error('GPT response generation failed:', gptError);
+      return res.status(500).json({
+        error: `Response generation failed: ${gptError.message}`,
+      });
+    }
+    
+    if (!responseTexts || responseTexts.length === 0) {
+      return res.status(500).json({
+        error: 'Failed to generate response suggestions. Please try again.',
+      });
+    }
 
     // Step 3: Get user's voice profile or use default
     let voiceId = getDefaultVoiceId();
@@ -149,7 +173,17 @@ export default async function handler(
 
     // Step 4: Synthesize each response with ElevenLabs
     console.log('Step 4: Synthesizing responses...');
+    
+    // Check if ElevenLabs is configured
+    if (!isConfigured()) {
+      console.error('ElevenLabs API key not configured');
+      return res.status(500).json({
+        error: 'Voice synthesis not configured. Please contact support.',
+      });
+    }
+    
     const suggestions: VoiceSuggestion[] = [];
+    const synthErrors: string[] = [];
 
     for (let i = 0; i < responseTexts.length; i++) {
       const text = responseTexts[i];
@@ -158,9 +192,12 @@ export default async function handler(
       try {
         console.log(`Synthesizing response ${i + 1}/${responseTexts.length}...`);
         const audioData = await synthesizeSpeech(voiceId, text);
+        console.log(`Synthesized ${audioData.length} bytes`);
 
         // Upload to Supabase Storage
         const storagePath = `ai-responses/${userId || deviceId}/${suggestionId}.mp3`;
+        console.log(`Uploading to: ${storagePath}`);
+        
         const { error: uploadError } = await supabaseAdmin.storage
           .from('ai-voice-files')
           .upload(storagePath, audioData, {
@@ -169,6 +206,7 @@ export default async function handler(
 
         if (uploadError) {
           console.error('Failed to upload synthesized audio:', uploadError);
+          synthErrors.push(`Upload failed: ${uploadError.message}`);
           continue;
         }
 
@@ -179,6 +217,7 @@ export default async function handler(
 
         if (!urlData?.signedUrl) {
           console.error('Failed to get signed URL for audio');
+          synthErrors.push('Failed to get download URL');
           continue;
         }
 
@@ -194,13 +233,18 @@ export default async function handler(
 
       } catch (synthError: any) {
         console.error(`Failed to synthesize response ${i + 1}:`, synthError);
+        synthErrors.push(synthError.message || 'Synthesis failed');
         // Continue with other responses
       }
     }
 
     if (suggestions.length === 0) {
+      const errorDetail = synthErrors.length > 0 
+        ? synthErrors[0] 
+        : 'Unknown error during voice synthesis';
+      console.error('All synthesis attempts failed:', synthErrors);
       return res.status(500).json({
-        error: 'Failed to generate voice responses. Please try again.',
+        error: `Voice generation failed: ${errorDetail}`,
       });
     }
 
