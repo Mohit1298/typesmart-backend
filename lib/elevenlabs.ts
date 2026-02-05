@@ -35,8 +35,9 @@ export async function cloneVoice(
   else if (ext === 'm4a') mimeType = 'audio/mp4';
   else if (ext === 'caf') mimeType = 'audio/x-caf';
   
-  // Create blob from buffer
-  const blob = new Blob([audioBuffer], { type: mimeType });
+  // Create blob from buffer - convert Buffer to Uint8Array for compatibility
+  const uint8Array = new Uint8Array(audioBuffer);
+  const blob = new Blob([uint8Array], { type: mimeType });
   formData.append('files', blob, filename);
   formData.append('name', name);
   formData.append('description', 'TypeSmart user voice profile');
