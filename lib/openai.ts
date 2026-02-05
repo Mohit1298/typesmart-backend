@@ -155,20 +155,46 @@ export async function transcribeAudio(
   audioBuffer: Buffer,
   filename: string
 ): Promise<string> {
+  // Check for unsupported formats
+  const supportedFormats = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm'];
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  
+  let processedFilename = filename;
+  let mimeType = getAudioMimeType(filename);
+  
+  // CAF files are not natively supported by Whisper
+  // The iOS app should convert CAF to M4A before upload, but as a fallback try WAV
+  if (ext === 'caf') {
+    console.log(`⚠️ CAF file received. iOS should convert to M4A before upload.`);
+    console.log(`   Attempting WAV fallback: ${filename} -> ${filename.replace(/\.caf$/i, '.wav')}`);
+    processedFilename = filename.replace(/\.caf$/i, '.wav');
+    mimeType = 'audio/wav';
+  } else if (!supportedFormats.includes(ext)) {
+    throw new Error(`Unsupported audio format: ${ext}. Supported formats: ${supportedFormats.join(', ')}`);
+  }
+  
   // Create a File-like object from the buffer - convert Buffer to Uint8Array for compatibility
   const uint8Array = new Uint8Array(audioBuffer);
-  const file = new File([uint8Array], filename, {
-    type: getAudioMimeType(filename),
+  const file = new File([uint8Array], processedFilename, {
+    type: mimeType,
   });
 
-  const response = await openai.audio.transcriptions.create({
-    file,
-    model: 'whisper-1',
-    language: 'en', // Can be made configurable
-    response_format: 'text',
-  });
+  try {
+    const response = await openai.audio.transcriptions.create({
+      file,
+      model: 'whisper-1',
+      language: 'en', // Can be made configurable
+      response_format: 'text',
+    });
 
-  return response;
+    return response;
+  } catch (error: any) {
+    // Provide more specific error message for format issues
+    if (error?.message?.includes('Invalid file format') || error?.status === 400) {
+      throw new Error(`Audio format error: Please ensure voice notes are recorded in a supported format (m4a, mp3, wav). Original format: ${ext}`);
+    }
+    throw error;
+  }
 }
 
 /**
