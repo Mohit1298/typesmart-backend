@@ -198,31 +198,32 @@ export async function transcribeAudio(
 }
 
 /**
- * Generate voice message response suggestions using GPT-4
+ * Generate alternative phrasings for a user's voice message using GPT-4
  * @param transcription The transcribed text from user's voice note
- * @param count Number of response suggestions to generate
- * @returns Array of response text suggestions
+ * @param count Number of alternative phrasings to generate
+ * @returns Array of alternative phrasings
  */
 export async function generateVoiceResponses(
   transcription: string,
   count: number
 ): Promise<string[]> {
-  const systemPrompt = `You are helping a user respond to a voice message they received. Generate exactly ${count} natural, conversational voice message responses.
+  const systemPrompt = `You are helping a user rephrase their voice message. They recorded a message but want to say it differently. Generate exactly ${count} alternative ways to express the SAME message.
 
 Rules:
-1. Each response should be 1-3 sentences, suitable for a voice note
-2. Vary the tone slightly: one could be casual, one friendly, one enthusiastic
-3. Do NOT include any context about what the original message said
-4. Do NOT include quotation marks around responses
-5. Do NOT number the responses
-6. Separate each response with "---"
-7. Write as if YOU are the person responding
-8. Keep responses natural and conversational, as if speaking to a friend
+1. Keep the SAME meaning and intent as the original message
+2. Each alternative should be 1-3 sentences, suitable for a voice note
+3. Vary the style: one more casual, one more polished, one more friendly/warm
+4. Do NOT change the core message - just rephrase HOW it's said
+5. Do NOT include quotation marks around alternatives
+6. Do NOT number the alternatives
+7. Separate each alternative with "---"
+8. Keep it natural and conversational, as if speaking to a friend
+9. Match the general length of the original message
 
-The user received this voice message:
+The user recorded this voice message:
 "${transcription}"
 
-Generate ${count} different ways to respond:`;
+Generate ${count} different ways to say the same thing:`;
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
