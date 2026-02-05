@@ -155,8 +155,9 @@ export async function transcribeAudio(
   audioBuffer: Buffer,
   filename: string
 ): Promise<string> {
-  // Create a File-like object from the buffer
-  const file = new File([audioBuffer], filename, {
+  // Create a File-like object from the buffer - convert Buffer to Uint8Array for compatibility
+  const uint8Array = new Uint8Array(audioBuffer);
+  const file = new File([uint8Array], filename, {
     type: getAudioMimeType(filename),
   });
 
