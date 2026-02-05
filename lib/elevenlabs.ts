@@ -64,13 +64,13 @@ export async function cloneVoice(
  * Synthesize speech from text using a voice
  * @param voiceId - Voice ID to use (cloned or default)
  * @param text - Text to synthesize
- * @param modelId - Model to use (default: eleven_monolingual_v1)
+ * @param modelId - Model to use (default: eleven_turbo_v2_5)
  * @returns Audio buffer (mp3)
  */
 export async function synthesizeSpeech(
   voiceId: string,
   text: string,
-  modelId: string = 'eleven_monolingual_v1'
+  modelId: string = 'eleven_turbo_v2_5'
 ): Promise<Buffer> {
   if (!ELEVENLABS_API_KEY) {
     throw new Error('ELEVENLABS_API_KEY not configured');
