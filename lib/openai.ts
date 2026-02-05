@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { Readable } from 'stream';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -18,11 +19,24 @@ export interface AIResponse {
   model: string;
 }
 
-// Credit costs
+// Credit costs for all AI operations
 export const CREDIT_COSTS = {
   text: 1,
   vision: 3,
+  // AI Voice costs
+  voiceProfileCreate: 10,
+  aiVoiceBase: 3,        // Transcribe + LLM + 1 TTS
+  aiVoicePerExtra: 2,    // Each additional response
 };
+
+/**
+ * Calculate credit cost for AI voice response generation
+ * @param responseCount Number of responses to generate (1, 3, or 5)
+ * @returns Credit cost
+ */
+export function calculateAIVoiceCost(responseCount: number): number {
+  return CREDIT_COSTS.aiVoiceBase + Math.max(0, responseCount - 1) * CREDIT_COSTS.aiVoicePerExtra;
+}
 
 export async function processAIRequest(options: AIRequestOptions): Promise<AIResponse> {
   const { prompt, imageBase64, maxTokens = 500, temperature = 0.7 } = options;
@@ -127,3 +141,107 @@ export const AI_PROMPTS = {
       : `Look at this image. If there is text in the image, rewrite it in a more casual and friendly tone. Only return the casual version, nothing else.`,
 };
 
+// ============================================
+// AI Voice Response Functions
+// ============================================
+
+/**
+ * Transcribe audio using OpenAI Whisper
+ * @param audioBuffer Audio data as Buffer
+ * @param filename Original filename with extension (for format detection)
+ * @returns Transcribed text
+ */
+export async function transcribeAudio(
+  audioBuffer: Buffer,
+  filename: string
+): Promise<string> {
+  // Create a File-like object from the buffer
+  const file = new File([audioBuffer], filename, {
+    type: getAudioMimeType(filename),
+  });
+
+  const response = await openai.audio.transcriptions.create({
+    file,
+    model: 'whisper-1',
+    language: 'en', // Can be made configurable
+    response_format: 'text',
+  });
+
+  return response;
+}
+
+/**
+ * Generate voice message response suggestions using GPT-4
+ * @param transcription The transcribed text from user's voice note
+ * @param count Number of response suggestions to generate
+ * @returns Array of response text suggestions
+ */
+export async function generateVoiceResponses(
+  transcription: string,
+  count: number
+): Promise<string[]> {
+  const systemPrompt = `You are helping a user respond to a voice message they received. Generate exactly ${count} natural, conversational voice message responses.
+
+Rules:
+1. Each response should be 1-3 sentences, suitable for a voice note
+2. Vary the tone slightly: one could be casual, one friendly, one enthusiastic
+3. Do NOT include any context about what the original message said
+4. Do NOT include quotation marks around responses
+5. Do NOT number the responses
+6. Separate each response with "---"
+7. Write as if YOU are the person responding
+8. Keep responses natural and conversational, as if speaking to a friend
+
+The user received this voice message:
+"${transcription}"
+
+Generate ${count} different ways to respond:`;
+
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: systemPrompt },
+    ],
+    max_tokens: 500,
+    temperature: 0.8, // Higher temperature for variety
+  });
+
+  const content = response.choices[0].message.content || '';
+  
+  // Split by "---" and clean up
+  const responses = content
+    .split('---')
+    .map(r => r.trim())
+    .filter(r => r.length > 0)
+    .slice(0, count); // Ensure we don't exceed requested count
+
+  // If we didn't get enough responses, fill with the content as a single response
+  if (responses.length === 0) {
+    return [content.trim()];
+  }
+
+  return responses;
+}
+
+/**
+ * Get MIME type from filename
+ */
+function getAudioMimeType(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'mp3':
+      return 'audio/mpeg';
+    case 'wav':
+      return 'audio/wav';
+    case 'm4a':
+      return 'audio/mp4';
+    case 'caf':
+      return 'audio/x-caf';
+    case 'ogg':
+      return 'audio/ogg';
+    case 'webm':
+      return 'audio/webm';
+    default:
+      return 'audio/mpeg';
+  }
+}
