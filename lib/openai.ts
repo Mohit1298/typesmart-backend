@@ -25,17 +25,16 @@ export const CREDIT_COSTS = {
   vision: 3,
   // AI Voice costs
   voiceProfileCreate: 10,
-  aiVoiceBase: 3,        // Transcribe + LLM + 1 TTS
-  aiVoicePerExtra: 2,    // Each additional response
+  aiVoiceFlat: 3,        // Flat cost per request regardless of count
 };
 
 /**
  * Calculate credit cost for AI voice response generation
  * @param responseCount Number of responses to generate (1, 3, or 5)
- * @returns Credit cost
+ * @returns Credit cost - flat 3 credits per request
  */
 export function calculateAIVoiceCost(responseCount: number): number {
-  return CREDIT_COSTS.aiVoiceBase + Math.max(0, responseCount - 1) * CREDIT_COSTS.aiVoicePerExtra;
+  return CREDIT_COSTS.aiVoiceFlat;
 }
 
 export async function processAIRequest(options: AIRequestOptions): Promise<AIResponse> {
@@ -89,19 +88,19 @@ export async function processAIRequest(options: AIRequestOptions): Promise<AIRes
 // Predefined prompts for different actions
 export const AI_PROMPTS = {
   rephrase: (text: string) => 
-    `Please rephrase the following text to make it clearer and more professional. Only return the rephrased text, nothing else: "${text}"`,
+    `Please rephrase the following text to make it clearer and more professional. Only return the rephrased text, nothing else. Do not wrap your response in quotation marks.\n\n${text}`,
   
   generate: (text: string) => 
-    `Based on this prompt, generate helpful text. Only return the generated text, nothing else: "${text}"`,
+    `Based on this prompt, generate helpful text. Only return the generated text, nothing else. Do not wrap your response in quotation marks.\n\n${text}`,
   
   grammar: (text: string) => 
-    `Please correct the grammar and spelling in the following text while maintaining its original meaning. Only return the corrected text, nothing else: "${text}"`,
+    `Please correct the grammar and spelling in the following text while maintaining its original meaning. Only return the corrected text, nothing else. Do not wrap your response in quotation marks.\n\n${text}`,
   
   formal: (text: string) => 
-    `Please rewrite the following text in a more formal tone. Only return the formal version, nothing else: "${text}"`,
+    `Please rewrite the following text in a more formal tone. Only return the formal version, nothing else. Do not wrap your response in quotation marks.\n\n${text}`,
   
   casual: (text: string) => 
-    `Please rewrite the following text in a more casual and friendly tone. Only return the casual version, nothing else: "${text}"`,
+    `Please rewrite the following text in a more casual and friendly tone. Only return the casual version, nothing else. Do not wrap your response in quotation marks.\n\n${text}`,
   
   analyze: (text?: string) => 
     text 
@@ -117,28 +116,28 @@ export const AI_PROMPTS = {
   // Vision + text combined
   rephraseWithImage: (text: string) => 
     text 
-      ? `Look at this image for context. Rephrase this text to be clearer and more professional: "${text}". Only return the rephrased text, nothing else.`
-      : `Look at this image. If there is text in the image, rephrase it to be clearer and more professional. Only return the rephrased text, nothing else.`,
+      ? `Look at this image for context. Rephrase this text to be clearer and more professional. Only return the rephrased text, nothing else. Do not wrap your response in quotation marks.\n\n${text}`
+      : `Look at this image. If there is text in the image, rephrase it to be clearer and more professional. Only return the rephrased text, nothing else. Do not wrap your response in quotation marks.`,
   
   generateWithImage: (text: string) => 
     text 
-      ? `Look at this image. Based on the image and this instruction: "${text}", generate the requested content. Only return the generated text, nothing else.`
-      : `Look at this image. Based on what you see, generate helpful and relevant text. Only return the generated text, nothing else.`,
+      ? `Look at this image. Based on the image and this instruction, generate the requested content. Only return the generated text, nothing else. Do not wrap your response in quotation marks.\n\n${text}`
+      : `Look at this image. Based on what you see, generate helpful and relevant text. Only return the generated text, nothing else. Do not wrap your response in quotation marks.`,
   
   grammarWithImage: (text: string) => 
     text 
-      ? `Look at this image. Correct the grammar and spelling in this text: "${text}". Only return the corrected text, nothing else.`
-      : `Look at this image. If there is text in the image, correct any grammar and spelling errors. Only return the corrected text, nothing else.`,
+      ? `Look at this image. Correct the grammar and spelling in this text. Only return the corrected text, nothing else. Do not wrap your response in quotation marks.\n\n${text}`
+      : `Look at this image. If there is text in the image, correct any grammar and spelling errors. Only return the corrected text, nothing else. Do not wrap your response in quotation marks.`,
   
   formalWithImage: (text: string) => 
     text 
-      ? `Look at this image for context. Rewrite this text in a more formal tone: "${text}". Only return the formal version, nothing else.`
-      : `Look at this image. If there is text in the image, rewrite it in a more formal tone. Only return the formal version, nothing else.`,
+      ? `Look at this image for context. Rewrite this text in a more formal tone. Only return the formal version, nothing else. Do not wrap your response in quotation marks.\n\n${text}`
+      : `Look at this image. If there is text in the image, rewrite it in a more formal tone. Only return the formal version, nothing else. Do not wrap your response in quotation marks.`,
   
   casualWithImage: (text: string) => 
     text 
-      ? `Look at this image for context. Rewrite this text in a more casual and friendly tone: "${text}". Only return the casual version, nothing else.`
-      : `Look at this image. If there is text in the image, rewrite it in a more casual and friendly tone. Only return the casual version, nothing else.`,
+      ? `Look at this image for context. Rewrite this text in a more casual and friendly tone. Only return the casual version, nothing else. Do not wrap your response in quotation marks.\n\n${text}`
+      : `Look at this image. If there is text in the image, rewrite it in a more casual and friendly tone. Only return the casual version, nothing else. Do not wrap your response in quotation marks.`,
 };
 
 // ============================================
@@ -207,9 +206,7 @@ export async function generateVoiceResponses(
   transcription: string,
   count: number
 ): Promise<string[]> {
-  const systemPrompt = `You help users rephrase their voice messages. Generate exactly ${count} alternative ways to say the same thing.
-
-CRITICAL FORMAT RULES:
+  const systemPrompt = `You help users rephrase their voice messages. Generate exactly ${count} alternative ways to say the same thing.CRITICAL FORMAT RULES:
 - Output ONLY the alternatives, nothing else
 - Put each alternative on its own line
 - Start each line with the number followed by a period (1. 2. 3.)

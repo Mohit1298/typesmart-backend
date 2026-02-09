@@ -51,9 +51,26 @@ export async function cloneVoice(
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    console.error('ElevenLabs clone voice error:', error);
-    throw new Error(`Failed to clone voice: ${response.status} ${error}`);
+    const errorText = await response.text();
+    console.error('ElevenLabs clone voice error:', errorText);
+    
+    // Parse specific ElevenLabs errors
+    try {
+      const errorJson = JSON.parse(errorText);
+      if (errorJson.detail?.status === 'cannot_use_instant_voice_cloning') {
+        throw new Error('Voice cloning requires an ElevenLabs paid subscription (Starter tier or higher). The AI Rephrase feature will still work with the default voice.');
+      }
+      if (errorJson.detail?.message) {
+        throw new Error(errorJson.detail.message);
+      }
+    } catch (parseError) {
+      // If not JSON, use the raw error
+      if (parseError instanceof Error && parseError.message.includes('Voice cloning requires')) {
+        throw parseError;
+      }
+    }
+    
+    throw new Error(`Failed to clone voice: ${response.status}`);
   }
 
   const data = await response.json();
