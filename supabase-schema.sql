@@ -70,7 +70,7 @@ CREATE TABLE usage_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     
-    request_type TEXT NOT NULL CHECK (request_type IN ('rephrase', 'generate', 'grammar', 'formal', 'casual', 'analyze', 'reply', 'extract', 'custom')),
+    request_type TEXT NOT NULL CHECK (request_type IN ('rephrase', 'generate', 'grammar', 'formal', 'casual', 'analyze', 'reply', 'extract', 'custom', 'dictation')),
     has_image BOOLEAN DEFAULT FALSE,
     
     credits_used INT NOT NULL,
@@ -93,7 +93,7 @@ CREATE TABLE guest_usage_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     device_id TEXT NOT NULL,
     
-    request_type TEXT NOT NULL CHECK (request_type IN ('rephrase', 'generate', 'grammar', 'formal', 'casual', 'analyze', 'reply', 'extract', 'custom')),
+    request_type TEXT NOT NULL CHECK (request_type IN ('rephrase', 'generate', 'grammar', 'formal', 'casual', 'analyze', 'reply', 'extract', 'custom', 'dictation')),
     has_image BOOLEAN DEFAULT FALSE,
     
     credits_used INT NOT NULL,

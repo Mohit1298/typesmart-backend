@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import formidable from 'formidable';
 import fs from 'fs';
 import { authenticateRequest } from '../../../lib/auth';
-import { getAvailableCredits, deductCredits, logUsage, logGuestUsage } from '../../../lib/supabase';
+import { supabaseAdmin, getAvailableCredits, deductCredits, logUsage, logGuestUsage } from '../../../lib/supabase';
 import { transcribeAudio } from '../../../lib/openai';
 
 export const config = {
@@ -55,14 +55,48 @@ export default async function handler(
     // Transcribe using Whisper
     const transcription = await transcribeAudio(audioBuffer, filename);
 
-    // Deduct credits and log usage
+    // Deduct credits
     let creditsRemaining = 0;
     if (user) {
       await deductCredits(user.id, TRANSCRIPTION_CREDIT_COST);
       creditsRemaining = await getAvailableCredits(user.id);
+    }
+
+    // Upload to Supabase storage and create voice_notes record
+    const uuid = crypto.randomUUID();
+    const fileExtension = filename.split('.').pop()?.toLowerCase() || 'wav';
+    const storagePath = `dictation/${uuid}.${fileExtension}`;
+
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from('voice-notes')
+      .upload(storagePath, audioBuffer, {
+        contentType: fileExtension === 'wav' ? 'audio/wav' : 'audio/m4a',
+        cacheControl: '3600',
+        upsert: false,
+      });
+
+    if (uploadError) {
+      console.error('Dictation upload error:', uploadError);
+      // Continue - transcription succeeded, just log the storage failure
+    } else {
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+
+      await supabaseAdmin.from('voice_notes').insert({
+        id: uuid,
+        user_id: user?.id ?? null,
+        device_id: deviceId ?? null,
+        storage_path: storagePath,
+        file_size_bytes: audioBuffer.length,
+        duration_seconds: null,
+        expires_at: expiresAt.toISOString(),
+      });
+    }
+
+    // Log usage (usage_logs for users, guest_usage_logs for guests)
+    if (user) {
       await logUsage(user.id, 'dictation', false, TRANSCRIPTION_CREDIT_COST);
     } else if (deviceId) {
-      // Guest mode - deduct handled client-side via UserDefaults
       await logGuestUsage(deviceId, 'dictation', false, TRANSCRIPTION_CREDIT_COST);
     }
 
