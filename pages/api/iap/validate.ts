@@ -11,6 +11,9 @@ const PRODUCT_CREDITS: Record<string, number> = {
 // Pro subscription product ID
 const PRO_MONTHLY_PRODUCT_ID = 'com.wirtel.TypeSmart.pro.monthly';
 
+// Pre-registration product ID (non-consumable, no credits)
+const PRE_REGISTRATION_PRODUCT_ID = 'com.wirtel.TypeSmart.preregistration';
+
 // Pro subscription monthly credits
 const PRO_MONTHLY_CREDITS = 500;
 
@@ -109,6 +112,26 @@ export default async function handler(
       }
       
       console.log(`✅ Added ${creditsToAdd} bonus credits to user ${user.id}`);
+    } else if (productId === PRE_REGISTRATION_PRODUCT_ID) {
+      // Pre-registration (non-consumable, no credits)
+      console.log('🎫 Processing pre-registration for logged-in user:', user.id);
+
+      // Also record in the pre_registrations table for easy querying
+      const { error: preRegError } = await supabaseAdmin
+        .from('pre_registrations')
+        .upsert({
+          device_id: req.body.deviceId || 'unknown',
+          transaction_id: transactionId,
+          product_id: productId,
+          user_id: user.id,
+          user_email: user.email,
+        }, { onConflict: 'transaction_id' });
+
+      if (preRegError) {
+        console.error('⚠️ Failed to record pre-registration (non-critical):', preRegError);
+      }
+
+      console.log(`✅ Pre-registration recorded for user ${user.id}`);
     } else {
       console.error('❌ Unknown product ID:', productId);
       return res.status(400).json({ error: `Unknown product ID: ${productId}` });
