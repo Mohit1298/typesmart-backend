@@ -5,14 +5,16 @@ import { authenticateRequest } from '@/lib/auth';
 /**
  * POST /api/pre-registration/record
  * 
- * Records a pre-registration purchase. Does NOT require auth.
+ * Records a pre-registration. Does NOT require auth.
  * Works for both guest users (device ID) and logged-in users (device ID + user ID).
+ * Supports free registrations (transactionId = "free" or omitted) and
+ * paid donations (transactionId = Apple StoreKit transaction ID).
  * 
  * Body:
  *   - deviceId: string (required) — unique device identifier
- *   - transactionId: string (required) — Apple StoreKit transaction ID
- *   - productId: string (required) — should be "com.wirtel.TypeSmart.preregistration"
- *   - appVersion?: string — app version at time of purchase
+ *   - transactionId?: string — "free" for free registration, or StoreKit transaction ID for donations
+ *   - productId?: string — product identifier
+ *   - appVersion?: string — app version at time of registration
  */
 export default async function handler(
   req: NextApiRequest,
@@ -25,30 +27,51 @@ export default async function handler(
   try {
     const { deviceId, transactionId, productId, appVersion } = req.body;
 
-    if (!deviceId || !transactionId) {
-      return res.status(400).json({ error: 'Missing required fields: deviceId, transactionId' });
+    if (!deviceId) {
+      return res.status(400).json({ error: 'Missing required field: deviceId' });
     }
+
+    const isFreeRegistration = !transactionId || transactionId === 'free';
+    const effectiveTransactionId = isFreeRegistration ? `free_${deviceId}` : transactionId;
 
     console.log('🎫 Pre-registration record request:', {
       deviceId,
-      transactionId,
+      transactionId: effectiveTransactionId,
       productId,
+      type: isFreeRegistration ? 'free' : 'donation',
     });
 
-    // Check if this transaction was already recorded
-    const { data: existing } = await supabaseAdmin
-      .from('pre_registrations')
-      .select('id')
-      .eq('transaction_id', transactionId)
-      .single();
+    // Duplicate check: by device_id for free registrations, by transaction_id for donations
+    if (isFreeRegistration) {
+      const { data: existing } = await supabaseAdmin
+        .from('pre_registrations')
+        .select('id')
+        .eq('device_id', deviceId)
+        .single();
 
-    if (existing) {
-      console.log('🎫 Transaction already recorded:', transactionId);
-      return res.status(200).json({
-        success: true,
-        message: 'Already recorded',
-        alreadyExists: true,
-      });
+      if (existing) {
+        console.log('🎫 Device already registered:', deviceId);
+        return res.status(200).json({
+          success: true,
+          message: 'Already registered',
+          alreadyExists: true,
+        });
+      }
+    } else {
+      const { data: existing } = await supabaseAdmin
+        .from('pre_registrations')
+        .select('id')
+        .eq('transaction_id', effectiveTransactionId)
+        .single();
+
+      if (existing) {
+        console.log('🎫 Transaction already recorded:', effectiveTransactionId);
+        return res.status(200).json({
+          success: true,
+          message: 'Already recorded',
+          alreadyExists: true,
+        });
+      }
     }
 
     // Try to identify the user (optional — works without auth)
@@ -65,12 +88,11 @@ export default async function handler(
       // No auth — that's fine, record as guest
     }
 
-    // Insert the pre-registration record
     const { error: insertError } = await supabaseAdmin
       .from('pre_registrations')
       .insert({
         device_id: deviceId,
-        transaction_id: transactionId,
+        transaction_id: effectiveTransactionId,
         product_id: productId || 'com.wirtel.TypeSmart.preregistration',
         user_id: userId,
         user_email: userEmail,
@@ -84,7 +106,8 @@ export default async function handler(
 
     console.log('✅ Pre-registration recorded:', {
       deviceId,
-      transactionId,
+      transactionId: effectiveTransactionId,
+      type: isFreeRegistration ? 'free' : 'donation',
       userId: userId || 'guest',
     });
 

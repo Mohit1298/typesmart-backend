@@ -138,7 +138,7 @@ export default function Terms() {
           </Section>
 
           <Section title="5. Refund Policy">
-            <p>All purchases are processed through Apple's App Store. Refund requests must be made through Apple. We do not process refunds directly.</p>
+            <p>Pre-registration is free and does not involve any payment. Optional donations are voluntary and processed through Apple's App Store. Refund requests for donations or other purchases must be made through Apple.</p>
           </Section>
 
           <Section title="6. Acceptable Use">
