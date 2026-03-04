@@ -67,7 +67,15 @@ async function getTargetTokens(payload: SendRequestBody): Promise<string[]> {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
+  const method = (req.method ?? '').toUpperCase();
+
+  if (method === 'OPTIONS') {
+    res.setHeader('Allow', 'POST, OPTIONS');
+    return res.status(200).end();
+  }
+
+  if (method !== 'POST') {
+    res.setHeader('Allow', 'POST, OPTIONS');
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
@@ -116,7 +124,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       failures: result.failures.slice(0, 20),
     });
   } catch (error) {
-    console.error('❌ Admin push send failed:', error);
-    return res.status(500).json({ error: 'Failed to send push notifications' });
+    // Avoid logging complex APNs objects directly; util.inspect can crash on some nested values.
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : 'Unknown error';
+    console.error('❌ Admin push send failed:', message);
+    if (error instanceof Error && error.stack) {
+      console.error(error.stack);
+    }
+    return res.status(500).json({ error: message || 'Failed to send push notifications' });
   }
 }
