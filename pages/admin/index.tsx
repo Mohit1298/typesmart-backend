@@ -24,6 +24,15 @@ interface Pagination {
   totalPages: number;
 }
 
+interface PushSendResponse {
+  success: boolean;
+  dryRun?: boolean;
+  targetedCount?: number;
+  sentCount?: number;
+  failedCount?: number;
+  error?: string;
+}
+
 export default function AdminDashboard() {
   const [users, setUsers] = useState<User[]>([]);
   const [pagination, setPagination] = useState<Pagination | null>(null);
@@ -38,6 +47,12 @@ export default function AdminDashboard() {
   const [stats, setStats] = useState<any>(null);
   const [archivedCount, setArchivedCount] = useState(0);
   const [actionLoading, setActionLoading] = useState(false);
+  const [pushTitle, setPushTitle] = useState('');
+  const [pushBody, setPushBody] = useState('');
+  const [pushAudience, setPushAudience] = useState<'all' | 'pre_registered' | 'donated'>('all');
+  const [pushDryRun, setPushDryRun] = useState(true);
+  const [pushLoading, setPushLoading] = useState(false);
+  const [pushResult, setPushResult] = useState<PushSendResponse | null>(null);
 
   // Login form state
   const [email, setEmail] = useState('');
@@ -250,6 +265,50 @@ export default function AdminDashboard() {
     }
   };
 
+  const sendPushNotification = async () => {
+    const title = pushTitle.trim();
+    const body = pushBody.trim();
+    if (!title || !body) {
+      alert('Please enter both notification title and body');
+      return;
+    }
+
+    setPushLoading(true);
+    setPushResult(null);
+
+    try {
+      const res = await fetch('/api/admin/notifications/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          title,
+          body,
+          audience: pushAudience,
+          dryRun: pushDryRun,
+          data: { source: 'admin_dashboard' },
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setPushResult({ success: false, error: data.error || 'Failed to send notification' });
+      } else {
+        setPushResult(data);
+        if (!pushDryRun) {
+          setPushTitle('');
+          setPushBody('');
+        }
+      }
+    } catch {
+      setPushResult({ success: false, error: 'Network error while sending notification' });
+    } finally {
+      setPushLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
@@ -372,6 +431,67 @@ export default function AdminDashboard() {
           <option value="true">Archived Only</option>
           <option value="all">All Users</option>
         </select>
+      </div>
+
+      {/* Push Notifications */}
+      <div className="px-6 pb-4">
+        <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+          <div className="text-lg font-semibold">📣 Push Notifications</div>
+          <div className="grid md:grid-cols-3 gap-3">
+            <input
+              type="text"
+              placeholder="Notification title"
+              value={pushTitle}
+              onChange={(e) => setPushTitle(e.target.value)}
+              className="md:col-span-1 px-4 py-2 bg-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+            <input
+              type="text"
+              placeholder="Notification body"
+              value={pushBody}
+              onChange={(e) => setPushBody(e.target.value)}
+              className="md:col-span-2 px-4 py-2 bg-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+          </div>
+          <div className="flex flex-wrap gap-3 items-center">
+            <select
+              value={pushAudience}
+              onChange={(e) => setPushAudience(e.target.value as 'all' | 'pre_registered' | 'donated')}
+              className="px-3 py-2 bg-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+            >
+              <option value="all">All registered devices</option>
+              <option value="pre_registered">Pre-registered users</option>
+              <option value="donated">Donated users</option>
+            </select>
+            <label className="flex items-center gap-2 text-sm text-gray-300">
+              <input
+                type="checkbox"
+                checked={pushDryRun}
+                onChange={(e) => setPushDryRun(e.target.checked)}
+                className="accent-blue-500"
+              />
+              Dry run (count only)
+            </label>
+            <button
+              onClick={sendPushNotification}
+              disabled={pushLoading}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm font-medium transition disabled:opacity-60"
+            >
+              {pushLoading ? 'Sending...' : (pushDryRun ? 'Preview Audience' : 'Send Notification')}
+            </button>
+          </div>
+          {pushResult && (
+            <div className={`text-sm rounded-lg px-3 py-2 ${pushResult.success ? 'bg-green-900/40 text-green-300' : 'bg-red-900/40 text-red-300'}`}>
+              {pushResult.success ? (
+                pushResult.dryRun
+                  ? `Dry run: ${pushResult.targetedCount ?? 0} devices will be targeted.`
+                  : `Sent: ${pushResult.sentCount ?? 0}, Failed: ${pushResult.failedCount ?? 0}, Targeted: ${pushResult.targetedCount ?? 0}`
+              ) : (
+                pushResult.error || 'Failed to send notification'
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Users Table */}
