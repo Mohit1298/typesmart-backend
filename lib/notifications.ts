@@ -21,20 +21,36 @@ function getProvider(): apn.Provider {
   }
 
   const keyPath = process.env.APN_KEY_PATH;
-  const keyRaw = process.env.APN_AUTH_KEY?.replace(/\\n/g, '\n');
+  const keyRaw = process.env.APN_AUTH_KEY?.replace(/\\n/g, '\n').trim();
 
   if (!keyPath && !keyRaw) {
     throw new Error('Missing APNs key: set APN_KEY_PATH or APN_AUTH_KEY');
   }
 
+  // apn expects token.key string values as file paths.
+  // For APN_AUTH_KEY env content we must pass an in-memory Buffer.
+  const tokenKey: string | Buffer = keyPath
+    ? keyPath
+    : Buffer.from(normalizeAuthKey(keyRaw!), 'utf8');
+
   return new apn.Provider({
     token: {
-      key: keyPath || keyRaw!,
+      key: tokenKey,
       keyId,
       teamId,
     },
     production: process.env.APN_PRODUCTION === 'true',
   });
+}
+
+function normalizeAuthKey(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.includes('BEGIN PRIVATE KEY')) {
+    return trimmed;
+  }
+
+  // Support users pasting just the base64 body from the .p8 key.
+  return `-----BEGIN PRIVATE KEY-----\n${trimmed}\n-----END PRIVATE KEY-----`;
 }
 
 export async function sendPushToTokens(args: {
