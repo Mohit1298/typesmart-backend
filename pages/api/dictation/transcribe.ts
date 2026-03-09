@@ -249,9 +249,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       try {
         if (user) {
           await deductCredits(user.id, creditCost);
-          await logUsage(user.id, 'dictation_romanize', false, creditCost, romanizeResult.tokensInput, romanizeResult.tokensOutput, romanizeResult.costUsd);
+          await logUsage(user.id, 'dictation', false, creditCost, romanizeResult.tokensInput, romanizeResult.tokensOutput, romanizeResult.costUsd);
         } else if (deviceId) {
-          await logGuestUsage(deviceId, 'dictation_romanize', false, creditCost, romanizeResult.tokensInput, romanizeResult.tokensOutput, romanizeResult.costUsd);
+          await logGuestUsage(deviceId, 'dictation', false, creditCost, romanizeResult.tokensInput, romanizeResult.tokensOutput, romanizeResult.costUsd);
           await getOrCreateGuestCredit(deviceId, creditCost);
         }
       } catch (logErr) {
