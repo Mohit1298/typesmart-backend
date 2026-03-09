@@ -57,7 +57,7 @@ async function sonioxCreateTranscription(
   const body: Record<string, any> = {
     model: 'stt-async-v4',
     file_id: fileId,
-    language_hints: languageHints.map((code) => ({ language: code })),
+    language_hints: languageHints,
     language_hints_strict: true,
     enable_language_identification: true,
   };
