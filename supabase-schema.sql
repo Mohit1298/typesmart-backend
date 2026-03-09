@@ -211,23 +211,14 @@ CREATE TABLE overage_charges (
 -- FUNCTIONS
 -- =============================================
 
--- Function to reset monthly credits
-CREATE OR REPLACE FUNCTION reset_monthly_credits()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.credits_reset_date <= NOW() THEN
-        NEW.monthly_credits_used := 0;
-        NEW.credits_reset_date := NOW() + INTERVAL '1 month';
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Trigger to auto-reset credits
-CREATE TRIGGER trigger_reset_credits
-    BEFORE UPDATE ON users
-    FOR EACH ROW
-    EXECUTE FUNCTION reset_monthly_credits();
+-- NOTE: Monthly credit resets are handled in application code
+-- (checkAndResetCreditsIfNeeded in lib/supabase.ts).
+-- The old BEFORE UPDATE trigger could not reset credits on read-only
+-- operations and caused race conditions during deductions.
+--
+-- To clean up the old trigger in an existing database, run:
+--   DROP TRIGGER IF EXISTS trigger_reset_credits ON users;
+--   DROP FUNCTION IF EXISTS reset_monthly_credits();
 
 -- Function to get available credits for a user
 CREATE OR REPLACE FUNCTION get_available_credits(p_user_id UUID)

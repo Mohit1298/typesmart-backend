@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getUserByEmail, supabaseAdmin, linkGuestDataToUser, getGuestCredit } from '@/lib/supabase';
+import { getUserByEmail, supabaseAdmin, linkGuestDataToUser, getGuestCredit, checkAndResetCreditsIfNeeded } from '@/lib/supabase';
 import { verifyPassword, generateToken, hashPassword } from '@/lib/auth';
 
 // Archive duration - accounts are permanently deleted after this period
@@ -103,20 +103,22 @@ export default async function handler(
       console.log(`✅ Linked guest data from device ${deviceId} to user ${user.id}`);
     }
     
-    // Generate token
-    const token = generateToken(user);
+    // Reset monthly credits if the billing cycle has elapsed
+    const freshUser = await checkAndResetCreditsIfNeeded(user);
+
+    const token = generateToken(freshUser);
     
-    // Calculate credits directly from updated user object to ensure consistency
-    const credits = user.monthly_credits + user.bonus_credits;
+    const monthlyRemaining = Math.max(0, freshUser.monthly_credits - freshUser.monthly_credits_used);
+    const credits = monthlyRemaining + freshUser.bonus_credits;
     
     return res.status(200).json({
       success: true,
       user: {
-        id: user.id,
-        email: user.email,
-        planType: user.plan_type,
+        id: freshUser.id,
+        email: freshUser.email,
+        planType: freshUser.plan_type,
         credits,
-        isVip: user.is_vip,
+        isVip: freshUser.is_vip,
       },
       token,
     });

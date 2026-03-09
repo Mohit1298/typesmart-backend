@@ -101,31 +101,60 @@ export async function getUserByEmail(email: string): Promise<User | null> {
   return data;
 }
 
+/**
+ * If the user's billing cycle has elapsed, reset monthly_credits_used to 0
+ * and advance credits_reset_date by one month. Returns the (possibly updated) user.
+ */
+export async function checkAndResetCreditsIfNeeded(user: User): Promise<User> {
+  const now = new Date();
+  const resetDate = new Date(user.credits_reset_date);
+
+  if (resetDate <= now) {
+    const newResetDate = new Date(now);
+    newResetDate.setMonth(newResetDate.getMonth() + 1);
+
+    const { data: updated } = await supabaseAdmin
+      .from('users')
+      .update({
+        monthly_credits_used: 0,
+        credits_reset_date: newResetDate.toISOString(),
+      })
+      .eq('id', user.id)
+      .select()
+      .single();
+
+    if (updated) return updated;
+  }
+
+  return user;
+}
+
 export async function getAvailableCredits(userId: string): Promise<number> {
-  const user = await getUserById(userId);
+  let user = await getUserById(userId);
   if (!user) return 0;
+
+  user = await checkAndResetCreditsIfNeeded(user);
   
   const monthlyRemaining = Math.max(0, user.monthly_credits - user.monthly_credits_used);
   return monthlyRemaining + user.bonus_credits;
 }
 
 export async function deductCredits(userId: string, credits: number): Promise<boolean> {
-  const user = await getUserById(userId);
+  let user = await getUserById(userId);
   if (!user) return false;
-  
-  const available = await getAvailableCredits(userId);
-  if (available < credits) return false;
+
+  user = await checkAndResetCreditsIfNeeded(user);
   
   const monthlyRemaining = Math.max(0, user.monthly_credits - user.monthly_credits_used);
+  const available = monthlyRemaining + user.bonus_credits;
+  if (available < credits) return false;
   
   if (monthlyRemaining >= credits) {
-    // Deduct from monthly only
     await supabaseAdmin
       .from('users')
       .update({ monthly_credits_used: user.monthly_credits_used + credits })
       .eq('id', userId);
   } else {
-    // Use all monthly + some bonus
     const bonusNeeded = credits - monthlyRemaining;
     await supabaseAdmin
       .from('users')

@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { requireAuth } from '@/lib/auth';
-import { getAvailableCredits } from '@/lib/supabase';
+import { getAvailableCredits, checkAndResetCreditsIfNeeded } from '@/lib/supabase';
 
 export default async function handler(
   req: NextApiRequest,
@@ -11,7 +11,8 @@ export default async function handler(
   }
 
   try {
-    const user = await requireAuth(req);
+    const rawUser = await requireAuth(req);
+    const user = await checkAndResetCreditsIfNeeded(rawUser);
     const credits = await getAvailableCredits(user.id);
     
     const monthlyRemaining = Math.max(0, user.monthly_credits - user.monthly_credits_used);

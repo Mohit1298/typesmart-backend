@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { supabaseAdmin, linkGuestDataToUser, getGuestCredit } from '@/lib/supabase';
+import { supabaseAdmin, linkGuestDataToUser, getGuestCredit, checkAndResetCreditsIfNeeded } from '@/lib/supabase';
 import { hashPassword, generateToken, verifyAppleToken } from '@/lib/auth';
 
 // Archive duration - accounts are permanently deleted after this period
@@ -76,18 +76,20 @@ export default async function handler(
           await linkGuestDataToUser(deviceId, existingUser.id);
         }
         
-        // Generate token for restored account
-        const token = generateToken(existingUser);
+        const restoredUser = await checkAndResetCreditsIfNeeded(existingUser);
+        const token = generateToken(restoredUser);
+        const monthlyRemaining = Math.max(0, restoredUser.monthly_credits - restoredUser.monthly_credits_used);
+        const credits = monthlyRemaining + restoredUser.bonus_credits;
         
         return res.status(200).json({
           success: true,
           restored: true,
           message: 'Your account has been restored!',
           user: {
-            id: existingUser.id,
-            email: existingUser.email,
-            planType: existingUser.plan_type,
-            credits: existingUser.monthly_credits + existingUser.bonus_credits,
+            id: restoredUser.id,
+            email: restoredUser.email,
+            planType: restoredUser.plan_type,
+            credits,
           },
           token,
         });

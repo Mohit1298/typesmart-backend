@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { verifyAppleToken, getOrCreateAppleUser, generateToken } from '@/lib/auth';
-import { supabaseAdmin, linkGuestDataToUser, getGuestCredit } from '@/lib/supabase';
+import { supabaseAdmin, linkGuestDataToUser, getGuestCredit, checkAndResetCreditsIfNeeded } from '@/lib/supabase';
 
 // Archive duration - accounts are permanently deleted after this period
 const ARCHIVE_DURATION_DAYS = 30;
@@ -88,22 +88,23 @@ export default async function handler(
           await linkGuestDataToUser(deviceId, existingUser.id);
         }
         
-        // Clear archived_at for response
         existingUser.archived_at = null;
         
-        const token = generateToken(existingUser);
-        const credits = existingUser.monthly_credits + existingUser.bonus_credits;
+        const restoredUser = await checkAndResetCreditsIfNeeded(existingUser);
+        const token = generateToken(restoredUser);
+        const monthlyRemaining = Math.max(0, restoredUser.monthly_credits - restoredUser.monthly_credits_used);
+        const credits = monthlyRemaining + restoredUser.bonus_credits;
         
         return res.status(200).json({
           success: true,
           restored: true,
           message: 'Your account has been restored!',
           user: {
-            id: existingUser.id,
-            email: existingUser.email,
-            planType: existingUser.plan_type,
+            id: restoredUser.id,
+            email: restoredUser.email,
+            planType: restoredUser.plan_type,
             credits,
-            isVip: existingUser.is_vip,
+            isVip: restoredUser.is_vip,
           },
           token,
         });
@@ -224,20 +225,20 @@ export default async function handler(
       }
     }
     
-    // Generate token
-    const token = generateToken(user);
+    const freshUser = await checkAndResetCreditsIfNeeded(user);
+    const token = generateToken(freshUser);
     
-    // Calculate credits directly from updated user object to ensure consistency
-    const credits = user.monthly_credits + user.bonus_credits;
+    const monthlyRemaining = Math.max(0, freshUser.monthly_credits - freshUser.monthly_credits_used);
+    const credits = monthlyRemaining + freshUser.bonus_credits;
     
     return res.status(200).json({
       success: true,
       user: {
-        id: user.id,
-        email: user.email,
-        planType: user.plan_type,
+        id: freshUser.id,
+        email: freshUser.email,
+        planType: freshUser.plan_type,
         credits,
-        isVip: user.is_vip,
+        isVip: freshUser.is_vip,
       },
       token,
     });
