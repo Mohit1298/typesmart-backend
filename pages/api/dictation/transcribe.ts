@@ -28,7 +28,9 @@ function sleep(ms: number) {
 async function sonioxUploadFile(audioBuffer: Buffer, filename: string): Promise<string> {
   const ext = filename.toLowerCase().split('.').pop() || 'm4a';
   const mimeType = ext === 'wav' ? 'audio/wav' : ext === 'mp3' ? 'audio/mpeg' : 'audio/m4a';
-  const blob = new Blob([new Uint8Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.byteLength)], { type: mimeType });
+  const ab = new ArrayBuffer(audioBuffer.byteLength);
+  new Uint8Array(ab).set(audioBuffer);
+  const blob = new Blob([ab], { type: mimeType });
   const form = new FormData();
   form.append('file', blob, filename);
 
