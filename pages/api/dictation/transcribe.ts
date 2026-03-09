@@ -1,6 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import formidable from 'formidable';
 import fs from 'fs';
+import { authenticateRequest } from '@/lib/auth';
+import { deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '@/lib/supabase';
 
 export const config = {
   api: {
@@ -122,9 +124,17 @@ function containsNonLatin(text: string): boolean {
   return /[^\u0000-\u024F\u1E00-\u1EFF\s\d.,!?;:'"()\-–—…@#$%^&*+=/<>[\]{}|\\~`_]/.test(text);
 }
 
-async function romanizeText(rawText: string, languageMode: string): Promise<string> {
+interface RomanizeResult {
+  text: string;
+  didCallOpenAI: boolean;
+  tokensInput: number;
+  tokensOutput: number;
+  costUsd: number;
+}
+
+async function romanizeText(rawText: string, languageMode: string): Promise<RomanizeResult> {
   if (!containsNonLatin(rawText)) {
-    return rawText;
+    return { text: rawText, didCallOpenAI: false, tokensInput: 0, tokensOutput: 0, costUsd: 0 };
   }
 
   const languageLabel =
@@ -163,12 +173,24 @@ ${rawText}`;
 
   if (!res.ok) {
     console.error('Romanization OpenAI call failed, returning raw text');
-    return rawText;
+    return { text: rawText, didCallOpenAI: false, tokensInput: 0, tokensOutput: 0, costUsd: 0 };
   }
 
   const data = await res.json();
   const romanized = data.choices?.[0]?.message?.content?.trim();
-  return romanized || rawText;
+  const tokensInput = data.usage?.prompt_tokens || 0;
+  const tokensOutput = data.usage?.completion_tokens || 0;
+  const costPerInput = 0.00015 / 1000;
+  const costPerOutput = 0.0006 / 1000;
+  const costUsd = (tokensInput * costPerInput) + (tokensOutput * costPerOutput);
+
+  return {
+    text: romanized || rawText,
+    didCallOpenAI: true,
+    tokensInput,
+    tokensOutput,
+    costUsd,
+  };
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -187,11 +209,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const startTime = Date.now();
 
   try {
+    const user = await authenticateRequest(req);
+
     const form = formidable({ maxFileSize: 25 * 1024 * 1024 });
     const [fields, files] = await form.parse(req);
 
     const audioFile = Array.isArray(files.audio) ? files.audio[0] : files.audio;
     const languageMode = (Array.isArray(fields.languageMode) ? fields.languageMode[0] : fields.languageMode) || 'hinglish';
+    const deviceId = (Array.isArray(fields.deviceId) ? fields.deviceId[0] : fields.deviceId) || '';
 
     if (!audioFile) {
       return res.status(400).json({ error: 'Audio file is required (field name: audio)' });
@@ -216,22 +241,38 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const transcribeMs = Date.now() - transcribeStart;
 
     const romanizeStart = Date.now();
-    const romanizedTranscript = await romanizeText(rawTranscript, languageMode);
+    const romanizeResult = await romanizeText(rawTranscript, languageMode);
     const romanizeMs = Date.now() - romanizeStart;
+
+    if (romanizeResult.didCallOpenAI) {
+      const creditCost = 1;
+      try {
+        if (user) {
+          await deductCredits(user.id, creditCost);
+          await logUsage(user.id, 'dictation_romanize', false, creditCost, romanizeResult.tokensInput, romanizeResult.tokensOutput, romanizeResult.costUsd);
+        } else if (deviceId) {
+          await logGuestUsage(deviceId, 'dictation_romanize', false, creditCost, romanizeResult.tokensInput, romanizeResult.tokensOutput, romanizeResult.costUsd);
+          await getOrCreateGuestCredit(deviceId, creditCost);
+        }
+      } catch (logErr) {
+        console.error('[dictation] Credit/log error (non-fatal):', logErr);
+      }
+    }
 
     try { fs.unlinkSync(audioFile.filepath); } catch {}
 
     const totalMs = Date.now() - startTime;
 
     console.log(
-      `[dictation] mode=${languageMode} upload=${uploadMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms raw="${rawTranscript.substring(0, 80)}" final="${romanizedTranscript.substring(0, 80)}"`
+      `[dictation] mode=${languageMode} upload=${uploadMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
     );
 
     return res.status(200).json({
       rawTranscript,
-      romanizedTranscript,
+      romanizedTranscript: romanizeResult.text,
       detectedLanguage: languageMode,
       provider: 'soniox',
+      creditsUsed: romanizeResult.didCallOpenAI ? 1 : 0,
       timings: { uploadMs, transcribeMs, romanizeMs, totalMs },
     });
   } catch (error: any) {
