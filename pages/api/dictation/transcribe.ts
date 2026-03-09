@@ -6,6 +6,7 @@ export const config = {
   api: {
     bodyParser: false,
   },
+  maxDuration: 120,
 };
 
 const SONIOX_API_KEY = process.env.SONIOX_API_KEY || '';
@@ -54,7 +55,7 @@ async function sonioxCreateTranscription(
   languageHints: string[]
 ): Promise<string> {
   const body: Record<string, any> = {
-    model: 'stt-async-preview',
+    model: 'stt-async-v4',
     file_id: fileId,
     language_hints: languageHints.map((code) => ({ language: code })),
     language_hints_strict: true,
