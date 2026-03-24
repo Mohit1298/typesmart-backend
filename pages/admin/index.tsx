@@ -24,13 +24,48 @@ interface Pagination {
   totalPages: number;
 }
 
+type PushAudience =
+  | 'all'
+  | 'pre_registered'
+  | 'donated'
+  | 'device_ids'
+  | 'user_ids'
+  | 'emails'
+  | 'plan_free'
+  | 'plan_pro'
+  | 'logged_in';
+
 interface PushSendResponse {
   success: boolean;
   dryRun?: boolean;
   targetedCount?: number;
   sentCount?: number;
   failedCount?: number;
+  audience?: string;
+  historyId?: string | null;
   error?: string;
+}
+
+interface NotificationHistoryRow {
+  id: string;
+  title: string;
+  body: string;
+  audience: string;
+  audience_detail: Record<string, unknown> | null;
+  targeted_count: number;
+  sent_count: number | null;
+  failed_count: number | null;
+  dry_run: boolean;
+  admin_email: string | null;
+  invalid_tokens_removed: number;
+  created_at: string;
+}
+
+function parseTargetList(raw: string): string[] {
+  return raw
+    .split(/[\s,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 export default function AdminDashboard() {
@@ -49,10 +84,16 @@ export default function AdminDashboard() {
   const [actionLoading, setActionLoading] = useState(false);
   const [pushTitle, setPushTitle] = useState('');
   const [pushBody, setPushBody] = useState('');
-  const [pushAudience, setPushAudience] = useState<'all' | 'pre_registered' | 'donated'>('all');
+  const [pushAudience, setPushAudience] = useState<PushAudience>('all');
+  const [pushTargetUserIds, setPushTargetUserIds] = useState('');
+  const [pushTargetEmails, setPushTargetEmails] = useState('');
+  const [pushTargetDeviceIds, setPushTargetDeviceIds] = useState('');
   const [pushDryRun, setPushDryRun] = useState(true);
   const [pushLoading, setPushLoading] = useState(false);
   const [pushResult, setPushResult] = useState<PushSendResponse | null>(null);
+  const [pushHistory, setPushHistory] = useState<NotificationHistoryRow[]>([]);
+  const [pushHistoryTotal, setPushHistoryTotal] = useState(0);
+  const [pushHistoryLoading, setPushHistoryLoading] = useState(false);
 
   // Login form state
   const [email, setEmail] = useState('');
@@ -74,6 +115,31 @@ export default function AdminDashboard() {
       fetchUsers();
     }
   }, [isLoggedIn, token, search, planFilter, archivedFilter]);
+
+  const fetchPushHistory = async () => {
+    if (!token) return;
+    setPushHistoryLoading(true);
+    try {
+      const res = await fetch('/api/admin/notifications/history?limit=50', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (res.ok && data.items) {
+        setPushHistory(data.items);
+        setPushHistoryTotal(data.total ?? data.items.length);
+      }
+    } catch (e) {
+      console.error('Failed to load push history:', e);
+    } finally {
+      setPushHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isLoggedIn && token) {
+      fetchPushHistory();
+    }
+  }, [isLoggedIn, token]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -289,6 +355,9 @@ export default function AdminDashboard() {
           audience: pushAudience,
           dryRun: pushDryRun,
           data: { source: 'admin_dashboard' },
+          ...(pushAudience === 'user_ids' && { userIds: parseTargetList(pushTargetUserIds) }),
+          ...(pushAudience === 'emails' && { emails: parseTargetList(pushTargetEmails) }),
+          ...(pushAudience === 'device_ids' && { deviceIds: parseTargetList(pushTargetDeviceIds) }),
         }),
       });
 
@@ -297,6 +366,7 @@ export default function AdminDashboard() {
         setPushResult({ success: false, error: data.error || 'Failed to send notification' });
       } else {
         setPushResult(data);
+        fetchPushHistory();
         if (!pushDryRun) {
           setPushTitle('');
           setPushBody('');
@@ -434,9 +504,12 @@ export default function AdminDashboard() {
       </div>
 
       {/* Push Notifications */}
-      <div className="px-6 pb-4">
+      <div className="px-6 pb-4 space-y-4">
         <div className="bg-gray-800 rounded-xl p-4 space-y-3">
           <div className="text-lg font-semibold">📣 Push Notifications</div>
+          <p className="text-sm text-gray-400">
+            Choose who receives the notification, then preview (dry run) or send. Target lists accept commas, spaces, or newlines.
+          </p>
           <div className="grid md:grid-cols-3 gap-3">
             <input
               type="text"
@@ -456,12 +529,18 @@ export default function AdminDashboard() {
           <div className="flex flex-wrap gap-3 items-center">
             <select
               value={pushAudience}
-              onChange={(e) => setPushAudience(e.target.value as 'all' | 'pre_registered' | 'donated')}
-              className="px-3 py-2 bg-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+              onChange={(e) => setPushAudience(e.target.value as PushAudience)}
+              className="px-3 py-2 bg-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none min-w-[220px]"
             >
               <option value="all">All registered devices</option>
-              <option value="pre_registered">Pre-registered users</option>
-              <option value="donated">Donated users</option>
+              <option value="logged_in">Logged-in users only (has account)</option>
+              <option value="plan_free">Free plan (signed-in)</option>
+              <option value="plan_pro">Pro plan (signed-in)</option>
+              <option value="pre_registered">Pre-registered users (by device)</option>
+              <option value="donated">Donated users (by device)</option>
+              <option value="user_ids">Specific user IDs (UUIDs)</option>
+              <option value="emails">Specific emails (account lookup)</option>
+              <option value="device_ids">Specific device IDs</option>
             </select>
             <label className="flex items-center gap-2 text-sm text-gray-300">
               <input
@@ -480,16 +559,118 @@ export default function AdminDashboard() {
               {pushLoading ? 'Sending...' : (pushDryRun ? 'Preview Audience' : 'Send Notification')}
             </button>
           </div>
+          {pushAudience === 'user_ids' && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">User IDs (UUID), one per line or comma-separated</label>
+              <textarea
+                value={pushTargetUserIds}
+                onChange={(e) => setPushTargetUserIds(e.target.value)}
+                rows={3}
+                placeholder="e.g. 8f3c2b1a-..."
+                className="w-full px-3 py-2 bg-gray-700 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+            </div>
+          )}
+          {pushAudience === 'emails' && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Email addresses (matched case-insensitively)</label>
+              <textarea
+                value={pushTargetEmails}
+                onChange={(e) => setPushTargetEmails(e.target.value)}
+                rows={3}
+                placeholder="user@example.com, other@example.com"
+                className="w-full px-3 py-2 bg-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+            </div>
+          )}
+          {pushAudience === 'device_ids' && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Device IDs (from your analytics / push_tokens)</label>
+              <textarea
+                value={pushTargetDeviceIds}
+                onChange={(e) => setPushTargetDeviceIds(e.target.value)}
+                rows={3}
+                placeholder="device id 1, device id 2"
+                className="w-full px-3 py-2 bg-gray-700 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+            </div>
+          )}
           {pushResult && (
             <div className={`text-sm rounded-lg px-3 py-2 ${pushResult.success ? 'bg-green-900/40 text-green-300' : 'bg-red-900/40 text-red-300'}`}>
               {pushResult.success ? (
                 pushResult.dryRun
-                  ? `Dry run: ${pushResult.targetedCount ?? 0} devices will be targeted.`
-                  : `Sent: ${pushResult.sentCount ?? 0}, Failed: ${pushResult.failedCount ?? 0}, Targeted: ${pushResult.targetedCount ?? 0}`
+                  ? `Dry run (${pushResult.audience ?? pushAudience}): ${pushResult.targetedCount ?? 0} devices will be targeted.${pushResult.historyId ? ` Logged as ${pushResult.historyId}.` : ''}`
+                  : `Sent: ${pushResult.sentCount ?? 0}, Failed: ${pushResult.failedCount ?? 0}, Targeted: ${pushResult.targetedCount ?? 0}${pushResult.historyId ? ` · History: ${pushResult.historyId}` : ''}`
               ) : (
                 pushResult.error || 'Failed to send notification'
               )}
             </div>
+          )}
+        </div>
+
+        {/* Notification history */}
+        <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+          <div className="flex justify-between items-center flex-wrap gap-2">
+            <div className="text-lg font-semibold">📜 Notification history</div>
+            <button
+              type="button"
+              onClick={fetchPushHistory}
+              disabled={pushHistoryLoading}
+              className="text-sm px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded-lg transition disabled:opacity-50"
+            >
+              {pushHistoryLoading ? 'Loading…' : 'Refresh'}
+            </button>
+          </div>
+          {pushHistoryLoading && pushHistory.length === 0 ? (
+            <div className="text-gray-400 text-sm">Loading history…</div>
+          ) : pushHistory.length === 0 ? (
+            <div className="text-gray-400 text-sm">No sends yet, or run the SQL migration for <code className="text-gray-300">push_notification_history</code>.</div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-gray-700">
+              <table className="w-full min-w-[800px] text-sm">
+                <thead className="bg-gray-750 text-gray-400">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium">When</th>
+                    <th className="text-left px-3 py-2 font-medium">Audience</th>
+                    <th className="text-left px-3 py-2 font-medium">Title</th>
+                    <th className="text-left px-3 py-2 font-medium">Targeted</th>
+                    <th className="text-left px-3 py-2 font-medium">Sent / Failed</th>
+                    <th className="text-left px-3 py-2 font-medium">Dry</th>
+                    <th className="text-left px-3 py-2 font-medium">Admin</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-700">
+                  {pushHistory.map((row) => (
+                    <tr key={row.id} className="align-top hover:bg-gray-750/50">
+                      <td className="px-3 py-2 whitespace-nowrap text-gray-300">
+                        {new Date(row.created_at).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2 text-gray-300 max-w-[140px]">
+                        <div className="truncate" title={row.audience}>{row.audience}</div>
+                      </td>
+                      <td className="px-3 py-2 text-gray-200 max-w-[220px]">
+                        <div className="font-medium truncate" title={row.title}>{row.title}</div>
+                        <div className="text-xs text-gray-500 truncate" title={row.body}>{row.body}</div>
+                      </td>
+                      <td className="px-3 py-2">{row.targeted_count}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {row.dry_run ? '—' : `${row.sent_count ?? 0} / ${row.failed_count ?? 0}`}
+                        {!row.dry_run && row.invalid_tokens_removed > 0 && (
+                          <span className="text-orange-400 text-xs block">Removed bad tokens: {row.invalid_tokens_removed}</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">{row.dry_run ? 'Yes' : 'No'}</td>
+                      <td className="px-3 py-2 text-gray-400 text-xs max-w-[120px] truncate" title={row.admin_email ?? ''}>
+                        {row.admin_email ?? '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {pushHistoryTotal > pushHistory.length && (
+            <div className="text-xs text-gray-500">Showing {pushHistory.length} of {pushHistoryTotal} (increase limit in API if needed).</div>
           )}
         </div>
       </div>

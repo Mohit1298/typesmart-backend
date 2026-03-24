@@ -2,69 +2,21 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { requireAdmin } from '@/lib/auth';
 import { sendPushToTokens } from '@/lib/notifications';
 import { supabaseAdmin } from '@/lib/supabase';
+import {
+  buildAudienceDetail,
+  getPushTargetTokens,
+  normalizeStringList,
+  type PushAudience,
+  type PushSendPayload,
+} from '@/lib/pushTargeting';
 
-type Audience = 'all' | 'pre_registered' | 'donated' | 'device_ids' | 'user_ids';
-
-type SendRequestBody = {
+type SendRequestBody = PushSendPayload & {
   title: string;
   body: string;
   data?: Record<string, unknown>;
-  audience?: Audience;
-  deviceIds?: string[];
-  userIds?: string[];
+  audience?: PushAudience;
   dryRun?: boolean;
 };
-
-async function getTargetTokens(payload: SendRequestBody): Promise<string[]> {
-  const audience = payload.audience ?? 'all';
-
-  if (audience === 'all') {
-    const { data } = await supabaseAdmin.from('push_tokens').select('push_token');
-    return (data ?? []).map((row: any) => row.push_token).filter(Boolean);
-  }
-
-  if (audience === 'device_ids') {
-    const deviceIds = payload.deviceIds ?? [];
-    if (deviceIds.length === 0) return [];
-    const { data } = await supabaseAdmin
-      .from('push_tokens')
-      .select('push_token')
-      .in('device_id', deviceIds);
-    return (data ?? []).map((row: any) => row.push_token).filter(Boolean);
-  }
-
-  if (audience === 'user_ids') {
-    const userIds = payload.userIds ?? [];
-    if (userIds.length === 0) return [];
-    const { data } = await supabaseAdmin
-      .from('push_tokens')
-      .select('push_token')
-      .in('user_id', userIds);
-    return (data ?? []).map((row: any) => row.push_token).filter(Boolean);
-  }
-
-  if (audience === 'pre_registered' || audience === 'donated') {
-    let query = supabaseAdmin.from('pre_registrations').select('device_id');
-
-    if (audience === 'donated') {
-      query = query.not('transaction_id', 'like', 'free_%');
-    }
-
-    const { data: registrations } = await query;
-    const deviceIds = Array.from(new Set((registrations ?? []).map((r: any) => r.device_id).filter(Boolean)));
-
-    if (deviceIds.length === 0) return [];
-
-    const { data: tokens } = await supabaseAdmin
-      .from('push_tokens')
-      .select('push_token')
-      .in('device_id', deviceIds);
-
-    return (tokens ?? []).map((row: any) => row.push_token).filter(Boolean);
-  }
-
-  return [];
-}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const method = (req.method ?? '').toUpperCase();
@@ -79,8 +31,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  let adminUser;
   try {
-    await requireAdmin(req);
+    adminUser = await requireAdmin(req);
   } catch {
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -94,14 +47,67 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: 'Missing required fields: title, body' });
     }
 
-    const tokens = await getTargetTokens(payload);
-    const uniqueTokens = Array.from(new Set(tokens));
+    const audience = (payload.audience ?? 'all') as PushAudience;
+    const audienceDetail = buildAudienceDetail({ ...payload, audience });
 
-    if (payload.dryRun) {
+    if (audience === 'device_ids' && normalizeStringList(payload.deviceIds).length === 0) {
+      return res.status(400).json({ error: 'audience device_ids requires at least one deviceIds value' });
+    }
+    if (audience === 'user_ids' && normalizeStringList(payload.userIds).length === 0) {
+      return res.status(400).json({ error: 'audience user_ids requires at least one userIds value' });
+    }
+    if (audience === 'emails' && normalizeStringList(payload.emails).length === 0) {
+      return res.status(400).json({ error: 'audience emails requires at least one emails value' });
+    }
+
+    const tokens = await getPushTargetTokens(payload);
+    const uniqueTokens = Array.from(new Set(tokens));
+    const dryRun = payload.dryRun === true;
+
+    const insertHistory = async (args: {
+      sentCount: number | null;
+      failedCount: number | null;
+      failuresSample: unknown;
+      invalidTokensRemoved: number;
+    }) => {
+      const { data, error } = await supabaseAdmin
+        .from('push_notification_history')
+        .insert({
+          title,
+          body,
+          audience,
+          audience_detail: audienceDetail,
+          targeted_count: uniqueTokens.length,
+          sent_count: args.sentCount,
+          failed_count: args.failedCount,
+          dry_run: dryRun,
+          admin_email: adminUser.email,
+          failures_sample: args.failuresSample,
+          invalid_tokens_removed: args.invalidTokensRemoved,
+        })
+        .select('id')
+        .single();
+
+      if (error) {
+        console.error('❌ Failed to record push_notification_history:', error.message);
+        return null;
+      }
+      return data?.id as string | undefined;
+    };
+
+    if (dryRun) {
+      const historyId = await insertHistory({
+        sentCount: null,
+        failedCount: null,
+        failuresSample: null,
+        invalidTokensRemoved: 0,
+      });
       return res.status(200).json({
         success: true,
         dryRun: true,
         targetedCount: uniqueTokens.length,
+        audience,
+        historyId: historyId ?? null,
       });
     }
 
@@ -112,9 +118,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       data: payload.data,
     });
 
+    let invalidRemoved = 0;
     if (result.invalidTokens.length > 0) {
-      await supabaseAdmin.from('push_tokens').delete().in('push_token', result.invalidTokens);
+      const { error: delErr } = await supabaseAdmin.from('push_tokens').delete().in('push_token', result.invalidTokens);
+      if (!delErr) invalidRemoved = result.invalidTokens.length;
     }
+
+    const failuresSample = result.failures.slice(0, 20).map((f) => ({ token: f.token, reason: f.reason }));
+
+    const historyId = await insertHistory({
+      sentCount: result.sentCount,
+      failedCount: result.failedCount,
+      failuresSample,
+      invalidTokensRemoved: invalidRemoved,
+    });
 
     return res.status(200).json({
       success: true,
@@ -122,9 +139,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       sentCount: result.sentCount,
       failedCount: result.failedCount,
       failures: result.failures.slice(0, 20),
+      audience,
+      invalidTokensRemoved: invalidRemoved,
+      historyId: historyId ?? null,
     });
   } catch (error) {
-    // Avoid logging complex APNs objects directly; util.inspect can crash on some nested values.
     const message =
       error instanceof Error
         ? error.message
