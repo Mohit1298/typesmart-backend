@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@soniox/node": "^1.1.2",
     "@supabase/supabase-js": "^2.38.0",
     "apn": "^2.2.0",
     "bcryptjs": "^2.4.3",

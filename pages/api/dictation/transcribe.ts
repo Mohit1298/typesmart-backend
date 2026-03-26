@@ -3,7 +3,7 @@ import formidable from 'formidable';
 import fs from 'fs';
 import { authenticateRequest } from '@/lib/auth';
 import { deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '@/lib/supabase';
-import { romanizeDictationText } from '@/lib/dictationRomanize';
+import { transcribeBufferViaSonioxRealtime } from '@/lib/sonioxRealtimeTranscribe';
 
 export const config = {
   api: {
@@ -12,8 +12,7 @@ export const config = {
   maxDuration: 120,
 };
 
-const SONIOX_API_KEY = process.env.SONIOX_API_KEY || '';
-const SONIOX_BASE = 'https://api.soniox.com/v1';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 const LANGUAGE_HINT_MAP: Record<string, string[]> = {
   hinglish: ['hi', 'en'],
@@ -21,112 +20,77 @@ const LANGUAGE_HINT_MAP: Record<string, string[]> = {
   gujarati_english: ['gu', 'en'],
 };
 
-const MAX_POLL_ATTEMPTS = 75;
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+function containsNonLatin(text: string): boolean {
+  return /[^\u0000-\u024F\u1E00-\u1EFF\s\d.,!?;:'"()\-–—…@#$%^&*+=/<>[\]{}|\\~`_]/.test(text);
 }
 
-/** First poll runs immediately; next ~2s use 250ms spacing; then 1s (avoids a fixed 1s wait before first check). */
-function delayBeforeSonioxPollMs(attemptIndex: number): number {
-  if (attemptIndex === 0) return 0;
-  if (attemptIndex <= 8) return 250;
-  return 1000;
+interface RomanizeResult {
+  text: string;
+  didCallOpenAI: boolean;
+  tokensInput: number;
+  tokensOutput: number;
+  costUsd: number;
 }
 
-async function sonioxUploadFile(audioBuffer: Buffer, filename: string): Promise<string> {
-  const ext = filename.toLowerCase().split('.').pop() || 'm4a';
-  const mimeType = ext === 'wav' ? 'audio/wav' : ext === 'mp3' ? 'audio/mpeg' : 'audio/m4a';
-  const ab = new ArrayBuffer(audioBuffer.byteLength);
-  new Uint8Array(ab).set(audioBuffer);
-  const blob = new Blob([ab], { type: mimeType });
-  const form = new FormData();
-  form.append('file', blob, filename);
-
-  const res = await fetch(`${SONIOX_BASE}/files`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${SONIOX_API_KEY}` },
-    body: form,
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Soniox file upload failed (${res.status}): ${err}`);
+async function romanizeText(rawText: string, languageMode: string): Promise<RomanizeResult> {
+  if (!containsNonLatin(rawText)) {
+    return { text: rawText, didCallOpenAI: false, tokensInput: 0, tokensOutput: 0, costUsd: 0 };
   }
 
-  const data = await res.json();
-  return data.id;
-}
+  const languageLabel =
+    languageMode === 'hinglish'
+      ? 'Hindi/Hinglish'
+      : languageMode === 'marathi_english'
+      ? 'Marathi'
+      : languageMode === 'gujarati_english'
+      ? 'Gujarati'
+      : 'Indian language';
 
-async function sonioxCreateTranscription(
-  fileId: string,
-  languageHints: string[]
-): Promise<string> {
-  const body: Record<string, any> = {
-    model: 'stt-async-v4',
-    file_id: fileId,
-    language_hints: languageHints,
-    language_hints_strict: true,
-    enable_language_identification: true,
-  };
+  const prompt = `You are a romanization engine. Convert the following ${languageLabel} text into Latin/Roman script exactly as a native speaker would type it using English letters. Rules:
+- Output ONLY the romanized text, nothing else.
+- Preserve the exact meaning and sentence structure. Do NOT translate to English.
+- Use natural, commonly-used romanization (e.g. "mujhe bhook lagi hai" not "mujhe bhūkh lagī hai").
+- Keep any English words already in the text as-is.
+- Preserve punctuation and sentence breaks.
+- Do NOT add quotes around the output.
 
-  const res = await fetch(`${SONIOX_BASE}/transcriptions`, {
+Text to romanize:
+${rawText}`;
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${SONIOX_API_KEY}`,
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      max_tokens: 500,
+    }),
   });
 
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Soniox create transcription failed (${res.status}): ${err}`);
+    console.error('Romanization OpenAI call failed, returning raw text');
+    return { text: rawText, didCallOpenAI: false, tokensInput: 0, tokensOutput: 0, costUsd: 0 };
   }
 
   const data = await res.json();
-  return data.id;
-}
+  const romanized = data.choices?.[0]?.message?.content?.trim();
+  const tokensInput = data.usage?.prompt_tokens || 0;
+  const tokensOutput = data.usage?.completion_tokens || 0;
+  const costPerInput = 0.00015 / 1000;
+  const costPerOutput = 0.0006 / 1000;
+  const costUsd = tokensInput * costPerInput + tokensOutput * costPerOutput;
 
-async function sonioxPollUntilComplete(transcriptionId: string): Promise<void> {
-  for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
-    const wait = delayBeforeSonioxPollMs(i);
-    if (wait > 0) {
-      await sleep(wait);
-    }
-
-    const res = await fetch(`${SONIOX_BASE}/transcriptions/${transcriptionId}`, {
-      headers: { Authorization: `Bearer ${SONIOX_API_KEY}` },
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Soniox poll failed (${res.status}): ${err}`);
-    }
-
-    const data = await res.json();
-
-    if (data.status === 'completed') return;
-    if (data.status === 'error') {
-      throw new Error(`Soniox transcription error: ${data.error_message || 'unknown'}`);
-    }
-  }
-
-  throw new Error('Soniox transcription timed out after polling');
-}
-
-async function sonioxGetTranscript(transcriptionId: string): Promise<string> {
-  const res = await fetch(`${SONIOX_BASE}/transcriptions/${transcriptionId}/transcript`, {
-    headers: { Authorization: `Bearer ${SONIOX_API_KEY}` },
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Soniox get transcript failed (${res.status}): ${err}`);
-  }
-
-  const data = await res.json();
-  return data.text || '';
+  return {
+    text: romanized || rawText,
+    didCallOpenAI: true,
+    tokensInput,
+    tokensOutput,
+    costUsd,
+  };
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -138,7 +102,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  if (!SONIOX_API_KEY) {
+  if (!process.env.SONIOX_API_KEY) {
     return res.status(500).json({ error: 'SONIOX_API_KEY not configured' });
   }
 
@@ -164,20 +128,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const audioBuffer = fs.readFileSync(audioFile.filepath);
-    const filename = audioFile.originalFilename || 'dictation.m4a';
-
-    const uploadStart = Date.now();
-    const fileId = await sonioxUploadFile(audioBuffer, filename);
-    const uploadMs = Date.now() - uploadStart;
 
     const transcribeStart = Date.now();
-    const transcriptionId = await sonioxCreateTranscription(fileId, hints);
-    await sonioxPollUntilComplete(transcriptionId);
-    const rawTranscript = await sonioxGetTranscript(transcriptionId);
+    const rawTranscript = await transcribeBufferViaSonioxRealtime(audioBuffer, hints);
     const transcribeMs = Date.now() - transcribeStart;
 
     const romanizeStart = Date.now();
-    const romanizeResult = await romanizeDictationText(rawTranscript, languageMode);
+    const romanizeResult = await romanizeText(rawTranscript, languageMode);
     const romanizeMs = Date.now() - romanizeStart;
 
     if (romanizeResult.didCallOpenAI) {
@@ -195,12 +152,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    try { fs.unlinkSync(audioFile.filepath); } catch {}
+    try {
+      fs.unlinkSync(audioFile.filepath);
+    } catch {}
 
     const totalMs = Date.now() - startTime;
 
     console.log(
-      `[dictation] mode=${languageMode} upload=${uploadMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
+      `[dictation] mode=${languageMode} provider=soniox-ws stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
     );
 
     return res.status(200).json({
@@ -209,7 +168,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       detectedLanguage: languageMode,
       provider: 'soniox',
       creditsUsed: romanizeResult.didCallOpenAI ? 1 : 0,
-      timings: { uploadMs, transcribeMs, romanizeMs, totalMs },
+      timings: { uploadMs: 0, transcribeMs, romanizeMs, totalMs },
     });
   } catch (error: any) {
     console.error('Dictation transcription error:', error);
