@@ -4,6 +4,12 @@ import fs from 'fs';
 import { authenticateRequest } from '@/lib/auth';
 import { deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '@/lib/supabase';
 
+// Local Brahmic → Latin (ITRANS-style); avoids a round-trip to OpenAI for typical Hindi/Marathi/Gujarati output.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const Sanscript = require('sanscript') as {
+  t: (data: string, from: string, to: string, options?: Record<string, unknown>) => string;
+};
+
 export const config = {
   api: {
     bodyParser: false,
@@ -22,7 +28,8 @@ const LANGUAGE_HINT_MAP: Record<string, string[]> = {
 };
 
 const MAX_POLL_ATTEMPTS = 60;
-const POLL_INTERVAL_MS = 1000;
+/** After the first immediate poll, short backoff then 1s — avoids a fixed 1s penalty when Soniox finishes quickly. */
+const POLL_BACKOFF_MS = [150, 250, 400, 600, 800] as const;
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -60,8 +67,10 @@ async function sonioxCreateTranscription(
     model: 'stt-async-v4',
     file_id: fileId,
     language_hints: languageHints,
-    language_hints_strict: true,
-    enable_language_identification: true,
+    // Looser hints = faster for code-switched audio; we already send hi+en / mr+en / gu+en from the client.
+    language_hints_strict: false,
+    // Per-language mode is chosen in-app; token-level LID adds latency with little benefit here.
+    enable_language_identification: false,
   };
 
   const res = await fetch(`${SONIOX_BASE}/transcriptions`, {
@@ -84,7 +93,10 @@ async function sonioxCreateTranscription(
 
 async function sonioxPollUntilComplete(transcriptionId: string): Promise<void> {
   for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
-    await sleep(POLL_INTERVAL_MS);
+    if (i > 0) {
+      const waitMs = i - 1 < POLL_BACKOFF_MS.length ? POLL_BACKOFF_MS[i - 1] : 1000;
+      await sleep(waitMs);
+    }
 
     const res = await fetch(`${SONIOX_BASE}/transcriptions/${transcriptionId}`, {
       headers: { Authorization: `Bearer ${SONIOX_API_KEY}` },
@@ -124,6 +136,51 @@ function containsNonLatin(text: string): boolean {
   return /[^\u0000-\u024F\u1E00-\u1EFF\s\d.,!?;:'"()\-–—…@#$%^&*+=/<>[\]{}|\\~`_]/.test(text);
 }
 
+/**
+ * Fast romanization: transliterate Indic script runs to Latin (ITRANS). English/Latin chunks unchanged.
+ * Returns null if non-Latin remains that we did not handle (fall back to OpenAI).
+ */
+function tryFastRomanize(rawText: string, languageMode: string): string | null {
+  if (!containsNonLatin(rawText)) {
+    return rawText;
+  }
+
+  const tryChunk = (chunk: string, from: 'devanagari' | 'gujarati') => {
+    try {
+      return Sanscript.t(chunk, from, 'itrans');
+    } catch {
+      return chunk;
+    }
+  };
+
+  // Unicode blocks (avoids `\p{Script=...}` so we stay compatible with older TS `target`)
+  const hasGujarati = /[\u0A80-\u0AFF]/.test(rawText);
+  const hasDevanagari = /[\u0900-\u097F]/.test(rawText);
+
+  try {
+    if (languageMode === 'gujarati_english') {
+      if (!hasGujarati) {
+        return null;
+      }
+      const out = rawText.replace(/[\u0A80-\u0AFF]+/g, (ch) => tryChunk(ch, 'gujarati'));
+      return containsNonLatin(out) ? null : out;
+    }
+
+    if (languageMode === 'hinglish' || languageMode === 'marathi_english') {
+      if (!hasDevanagari) {
+        return null;
+      }
+      const out = rawText.replace(/[\u0900-\u097F]+/g, (ch) => tryChunk(ch, 'devanagari'));
+      return containsNonLatin(out) ? null : out;
+    }
+  } catch (e) {
+    console.error('[dictation] tryFastRomanize error', e);
+    return null;
+  }
+
+  return null;
+}
+
 interface RomanizeResult {
   text: string;
   didCallOpenAI: boolean;
@@ -137,6 +194,15 @@ async function romanizeText(rawText: string, languageMode: string): Promise<Roma
     return { text: rawText, didCallOpenAI: false, tokensInput: 0, tokensOutput: 0, costUsd: 0 };
   }
 
+  const fast = tryFastRomanize(rawText, languageMode);
+  if (fast !== null) {
+    return { text: fast, didCallOpenAI: false, tokensInput: 0, tokensOutput: 0, costUsd: 0 };
+  }
+
+  if (!OPENAI_API_KEY) {
+    return { text: rawText, didCallOpenAI: false, tokensInput: 0, tokensOutput: 0, costUsd: 0 };
+  }
+
   const languageLabel =
     languageMode === 'hinglish'
       ? 'Hindi/Hinglish'
@@ -146,15 +212,8 @@ async function romanizeText(rawText: string, languageMode: string): Promise<Roma
       ? 'Gujarati'
       : 'Indian language';
 
-  const prompt = `You are a romanization engine. Convert the following ${languageLabel} text into Latin/Roman script exactly as a native speaker would type it using English letters. Rules:
-- Output ONLY the romanized text, nothing else.
-- Preserve the exact meaning and sentence structure. Do NOT translate to English.
-- Use natural, commonly-used romanization (e.g. "mujhe bhook lagi hai" not "mujhe bhūkh lagī hai").
-- Keep any English words already in the text as-is.
-- Preserve punctuation and sentence breaks.
-- Do NOT add quotes around the output.
+  const prompt = `Romanize ${languageLabel} to natural Latin (how people type on WhatsApp). No translation. Keep English as-is. Output only the text, no quotes.
 
-Text to romanize:
 ${rawText}`;
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -166,8 +225,8 @@ ${rawText}`;
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
-      temperature: 0.2,
-      max_tokens: 500,
+      temperature: 0,
+      max_tokens: 220,
     }),
   });
 
