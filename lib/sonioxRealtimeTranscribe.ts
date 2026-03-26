@@ -1,6 +1,7 @@
 import { RealtimeSegmentBuffer, SonioxNodeClient } from '@soniox/node';
 
-const CHUNK_BYTES = 32 * 1024;
+/** Smaller chunks start streaming to Soniox sooner on short dictation clips. */
+const CHUNK_BYTES = 8 * 1024;
 
 /**
  * Transcribe a full audio file via Soniox real-time WebSocket (stt-rt-v4).
@@ -24,8 +25,11 @@ export async function transcribeBufferViaSonioxRealtime(
     audio_format: 'auto',
     language_hints: languageHints,
     language_hints_strict: true,
-    enable_language_identification: true,
-    enable_endpoint_detection: true,
+    // Per-token language ID is unused for dictation; disabling saves model work.
+    enable_language_identification: false,
+    // Pre-recorded clips: semantic endpointing can add up to max_endpoint_delay_ms (default 2000)
+    // after the last audio byte. We finalize explicitly after the file instead.
+    enable_endpoint_detection: false,
   });
 
   session.on('result', (result) => {
@@ -51,7 +55,10 @@ export async function transcribeBufferViaSonioxRealtime(
   }
 
   try {
-    await session.sendStream(chunkAudio(), { finish: true });
+    await session.sendStream(chunkAudio(), { finish: false });
+    // Forces final tokens without waiting for conversational endpoint / default 2000ms delay.
+    session.finalize({ trailing_silence_ms: 200 });
+    await session.finish();
   } catch (e) {
     session.close();
     throw e;
