@@ -24,6 +24,21 @@ function containsNonLatin(text: string): boolean {
   return /[^\u0000-\u024F\u1E00-\u1EFF\s\d.,!?;:'"()\-–—…@#$%^&*+=/<>[\]{}|\\~`_]/.test(text);
 }
 
+/**
+ * With bilingual hints (e.g. hi+en), Soniox sometimes prepends a spurious English token like "But."
+ * before Indic script. The romanizer correctly preserves it. Strip only when the rest is clearly
+ * Indic/mixed (non-Latin), so real English-only phrases are unchanged.
+ */
+function stripLeadingSpuriousEnglishBeforeIndic(text: string): { text: string; didStrip: boolean } {
+  const trimmed = text.trim();
+  if (!trimmed) return { text, didStrip: false };
+  const m = trimmed.match(/^(but)\.?\s+/i);
+  if (!m) return { text, didStrip: false };
+  const rest = trimmed.slice(m[0].length);
+  if (!rest || !containsNonLatin(rest)) return { text, didStrip: false };
+  return { text: rest, didStrip: true };
+}
+
 interface RomanizeResult {
   text: string;
   didCallOpenAI: boolean;
@@ -130,8 +145,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const audioBuffer = fs.readFileSync(audioFile.filepath);
 
     const transcribeStart = Date.now();
-    const rawTranscript = await transcribeBufferViaSonioxRealtime(audioBuffer, hints);
+    const rawFromStt = await transcribeBufferViaSonioxRealtime(audioBuffer, hints);
+    const { text: rawTranscript, didStrip: strippedSpuriousBut } = stripLeadingSpuriousEnglishBeforeIndic(rawFromStt);
     const transcribeMs = Date.now() - transcribeStart;
+
+    if (strippedSpuriousBut) {
+      console.log(
+        `[dictation] Stripped leading STT noise (spurious "But"): stt_raw="${rawFromStt.substring(0, 120)}" → use="${rawTranscript.substring(0, 120)}"`
+      );
+    }
 
     const romanizeStart = Date.now();
     const romanizeResult = await romanizeText(rawTranscript, languageMode);
