@@ -124,10 +124,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const startTime = Date.now();
 
   try {
-    const user = await authenticateRequest(req);
-
+    // Parse multipart body and load user in parallel: auth only reads headers; form consumes the body stream.
+    // Previously this was sequential (auth → parse), adding Supabase RTT on top of upload parse time.
     const form = formidable({ maxFileSize: 25 * 1024 * 1024 });
-    const [fields, files] = await form.parse(req);
+    const parseAuthStart = Date.now();
+    const [[fields, files], user] = await Promise.all([
+      form.parse(req),
+      authenticateRequest(req),
+    ]);
+    const parseAndAuthMs = Date.now() - parseAuthStart;
 
     const audioFile = Array.isArray(files.audio) ? files.audio[0] : files.audio;
     const languageMode = (Array.isArray(fields.languageMode) ? fields.languageMode[0] : fields.languageMode) || 'hinglish';
@@ -155,6 +160,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       );
     }
 
+    // Romanization (OpenAI) must run after STT: totals are ~ sonioxMs + openaiMs + network, not max().
     const romanizeStart = Date.now();
     const romanizeResult = await romanizeText(rawTranscript, languageMode);
     const romanizeMs = Date.now() - romanizeStart;
@@ -181,7 +187,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const totalMs = Date.now() - startTime;
 
     console.log(
-      `[dictation] mode=${languageMode} provider=soniox-ws stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
+      `[dictation] mode=${languageMode} provider=soniox-ws parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
     );
 
     return res.status(200).json({

@@ -1,7 +1,7 @@
 import { RealtimeSegmentBuffer, SonioxNodeClient } from '@soniox/node';
 
-/** Smaller chunks start streaming to Soniox sooner on short dictation clips. */
-const CHUNK_BYTES = 8 * 1024;
+/** Balance: fewer WebSocket frames (less overhead) vs. first-byte latency on very short clips. */
+const CHUNK_BYTES = 24 * 1024;
 
 /**
  * Transcribe a full audio file via Soniox real-time WebSocket (stt-rt-v4).
@@ -56,8 +56,9 @@ export async function transcribeBufferViaSonioxRealtime(
 
   try {
     await session.sendStream(chunkAudio(), { finish: false });
-    // Forces final tokens without waiting for conversational endpoint / default 2000ms delay.
-    session.finalize({ trailing_silence_ms: 200 });
+    // Forces final tokens without endpointing. Keep trailing_silence small — each ms here is pure wait
+    // on top of Soniox’s own processing (their ~250ms figure is model latency, not this tail).
+    session.finalize({ trailing_silence_ms: 80 });
     await session.finish();
   } catch (e) {
     session.close();
