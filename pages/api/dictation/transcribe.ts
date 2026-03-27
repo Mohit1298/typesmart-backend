@@ -165,19 +165,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const romanizeResult = await romanizeText(rawTranscript, languageMode);
     const romanizeMs = Date.now() - romanizeStart;
 
+    let creditsMs = 0;
     if (romanizeResult.didCallOpenAI) {
       const creditCost = 1;
+      const creditsStart = Date.now();
       try {
         if (user) {
-          await deductCredits(user.id, creditCost);
-          await logUsage(user.id, 'dictation', false, creditCost, romanizeResult.tokensInput, romanizeResult.tokensOutput, romanizeResult.costUsd);
+          // Independent Supabase writes — sequential cost ~2× RTT; parallel saves wall time on totalMs.
+          await Promise.all([
+            deductCredits(user.id, creditCost),
+            logUsage(
+              user.id,
+              'dictation',
+              false,
+              creditCost,
+              romanizeResult.tokensInput,
+              romanizeResult.tokensOutput,
+              romanizeResult.costUsd
+            ),
+          ]);
         } else if (deviceId) {
-          await logGuestUsage(deviceId, 'dictation', false, creditCost, romanizeResult.tokensInput, romanizeResult.tokensOutput, romanizeResult.costUsd);
-          await getOrCreateGuestCredit(deviceId, creditCost);
+          await Promise.all([
+            logGuestUsage(
+              deviceId,
+              'dictation',
+              false,
+              creditCost,
+              romanizeResult.tokensInput,
+              romanizeResult.tokensOutput,
+              romanizeResult.costUsd
+            ),
+            getOrCreateGuestCredit(deviceId, creditCost),
+          ]);
         }
       } catch (logErr) {
         console.error('[dictation] Credit/log error (non-fatal):', logErr);
       }
+      creditsMs = Date.now() - creditsStart;
     }
 
     try {
@@ -187,7 +211,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const totalMs = Date.now() - startTime;
 
     console.log(
-      `[dictation] mode=${languageMode} provider=soniox-ws parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
+      `[dictation] mode=${languageMode} provider=soniox-ws parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms credits=${creditsMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
     );
 
     return res.status(200).json({
