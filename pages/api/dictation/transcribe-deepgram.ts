@@ -1,9 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import formidable from 'formidable';
-import fs from 'fs';
 import { authenticateRequest } from '@/lib/auth';
 import { deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '@/lib/supabase';
-import { transcribeBufferViaDeepgram, contentTypeForDictationFilename } from '@/lib/deepgramTranscribe';
+import { transcribeBufferViaDeepgram } from '@/lib/deepgramTranscribe';
 
 export const config = {
   api: {
@@ -12,9 +10,36 @@ export const config = {
   maxDuration: 120,
 };
 
+const MAX_BODY_BYTES = 25 * 1024 * 1024;
+
+function readRawBody(req: NextApiRequest): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) {
+        reject(new Error(`Body exceeds ${MAX_BODY_BYTES} bytes`));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
 /**
- * Fast Hinglish path: app sends WAV (native CAF→WAV, same as Soniox) → Deepgram (hi-Latn).
- * @see https://developers.deepgram.com/docs/pre-recorded-audio
+ * Fast Hinglish dictation: raw audio body + metadata in headers → Deepgram → respond before credits.
+ *
+ * Headers:
+ *   Content-Type: audio/wav
+ *   X-Language-Mode: hinglish_fast
+ *   X-Device-Id: <device-uuid>
+ *   Authorization: Bearer <token>  (optional)
+ *
+ * Body: raw audio bytes (no multipart).
  */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'OPTIONS') {
@@ -32,43 +57,58 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const startTime = Date.now();
 
   try {
-    const form = formidable({ maxFileSize: 25 * 1024 * 1024 });
     const parseAuthStart = Date.now();
-    const [[fields, files], user] = await Promise.all([
-      form.parse(req),
+    const [audioBuffer, user] = await Promise.all([
+      readRawBody(req),
       authenticateRequest(req),
     ]);
     const parseAndAuthMs = Date.now() - parseAuthStart;
 
-    const audioFile = Array.isArray(files.audio) ? files.audio[0] : files.audio;
-    const languageMode =
-      (Array.isArray(fields.languageMode) ? fields.languageMode[0] : fields.languageMode) ||
-      'hinglish_fast';
-    const deviceId =
-      (Array.isArray(fields.deviceId) ? fields.deviceId[0] : fields.deviceId) || '';
+    const contentType = (req.headers['content-type'] as string) || 'audio/wav';
+    const deviceId = (req.headers['x-device-id'] as string) || '';
 
-    if (!audioFile) {
-      return res.status(400).json({ error: 'Audio file is required (field name: audio)' });
+    if (!audioBuffer.length) {
+      return res.status(400).json({ error: 'Empty audio body' });
     }
 
-    if (languageMode !== 'hinglish_fast') {
-      return res.status(400).json({
-        error: 'This endpoint only accepts languageMode=hinglish_fast',
+    const dgStart = Date.now();
+    const { transcript, deepgramMs, audioDurationSec, requestId } =
+      await transcribeBufferViaDeepgram(audioBuffer, contentType);
+    const transcribeMs = Date.now() - dgStart;
+
+    const totalMs = Date.now() - startTime;
+
+    const durHint =
+      audioDurationSec != null ? `${audioDurationSec.toFixed(2)}s_audio` : 'duration_unknown';
+    const dgId = requestId ?? 'none';
+    console.log(
+      `[dictation-deepgram] parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms dg_fetch=${deepgramMs}ms total=${totalMs}ms chars=${transcript.length} bytes=${audioBuffer.length} dur=${durHint} dgId=${dgId} ct=${contentType}`
+    );
+
+    if (!transcript) {
+      res.status(200).json({
+        rawTranscript: '',
+        romanizedTranscript: null,
+        detectedLanguage: 'hi-Latn',
+        provider: 'deepgram',
+        error: 'Empty transcript',
+        creditsUsed: 0,
+        timings: { parseAndAuthMs, transcribeMs, totalMs },
+      });
+    } else {
+      res.status(200).json({
+        rawTranscript: transcript,
+        romanizedTranscript: transcript,
+        detectedLanguage: 'hi-Latn',
+        provider: 'deepgram',
+        creditsUsed: 1,
+        timings: { parseAndAuthMs, transcribeMs, totalMs },
       });
     }
 
-    const audioBuffer = fs.readFileSync(audioFile.filepath);
-    const filename = audioFile.originalFilename || 'dictation.wav';
-    const contentType = contentTypeForDictationFilename(filename);
-
-    const dgStart = Date.now();
-    const { transcript, deepgramMs } = await transcribeBufferViaDeepgram(audioBuffer, contentType);
-    const transcribeMs = Date.now() - dgStart;
-
-    let creditsMs = 0;
+    // Fire-and-forget: credits + logging AFTER response is sent.
     if (transcript.length > 0) {
       const creditCost = 1;
-      const creditsStart = Date.now();
       try {
         if (user) {
           await Promise.all([
@@ -84,39 +124,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       } catch (logErr) {
         console.error('[dictation-deepgram] Credit/log error (non-fatal):', logErr);
       }
-      creditsMs = Date.now() - creditsStart;
     }
-
-    try {
-      fs.unlinkSync(audioFile.filepath);
-    } catch {}
-
-    const totalMs = Date.now() - startTime;
-
-    console.log(
-      `[dictation-deepgram] parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms deepgram_reported=${deepgramMs}ms credits=${creditsMs}ms total=${totalMs}ms len=${transcript.length} file="${filename}" contentType=${contentType}`
-    );
-
-    if (!transcript) {
-      return res.status(200).json({
-        rawTranscript: '',
-        romanizedTranscript: null,
-        detectedLanguage: 'hi-Latn',
-        provider: 'deepgram',
-        error: 'Empty transcript',
-        creditsUsed: 0,
-        timings: { parseAndAuthMs, transcribeMs, creditsMs, totalMs },
-      });
-    }
-
-    return res.status(200).json({
-      rawTranscript: transcript,
-      romanizedTranscript: transcript,
-      detectedLanguage: 'hi-Latn',
-      provider: 'deepgram',
-      creditsUsed: 1,
-      timings: { parseAndAuthMs, transcribeMs, creditsMs, totalMs },
-    });
   } catch (error: any) {
     console.error('Dictation Deepgram error:', error);
     return res.status(500).json({

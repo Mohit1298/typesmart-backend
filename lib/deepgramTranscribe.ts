@@ -2,7 +2,7 @@
  * Deepgram pre-recorded STT (https://developers.deepgram.com/docs/pre-recorded-audio).
  * Hindi in Latin script uses language=hi-Latn (see models-languages-overview; base/nova support hi-Latn).
  *
- * The app sends WAV (same native CAF→WAV path as Soniox dictation); Deepgram reads the container.
+ * The app sends WAV (linear PCM); Deepgram reads the container.
  *
  * Override query via env: DEEPGRAM_LISTEN_QUERY=model=nova-3&language=multi&smart_format=true
  */
@@ -15,10 +15,30 @@ export function parseDeepgramTranscript(data: unknown): string {
   return typeof t === 'string' ? t.trim() : '';
 }
 
+/** Deepgram pre-recorded JSON includes metadata.duration (seconds of audio processed). */
+export function parseDeepgramAudioDurationSec(data: unknown): number | undefined {
+  const d = data as { metadata?: { duration?: number } };
+  const dur = d?.metadata?.duration;
+  return typeof dur === 'number' && Number.isFinite(dur) ? dur : undefined;
+}
+
+export function parseDeepgramRequestId(data: unknown): string | undefined {
+  const d = data as { metadata?: { request_id?: string } };
+  const id = d?.metadata?.request_id;
+  return typeof id === 'string' && id.length > 0 ? id : undefined;
+}
+
+export type DeepgramTranscribeResult = {
+  transcript: string;
+  deepgramMs: number;
+  audioDurationSec?: number;
+  requestId?: string;
+};
+
 export async function transcribeBufferViaDeepgram(
   buffer: Buffer,
   contentType: string
-): Promise<{ transcript: string; deepgramMs: number }> {
+): Promise<DeepgramTranscribeResult> {
   const key = process.env.DEEPGRAM_API_KEY;
   if (!key) {
     throw new Error('DEEPGRAM_API_KEY not configured');
@@ -45,7 +65,12 @@ export async function transcribeBufferViaDeepgram(
   }
 
   const json = await res.json();
-  return { transcript: parseDeepgramTranscript(json), deepgramMs };
+  return {
+    transcript: parseDeepgramTranscript(json),
+    deepgramMs,
+    audioDurationSec: parseDeepgramAudioDurationSec(json),
+    requestId: parseDeepgramRequestId(json),
+  };
 }
 
 export function contentTypeForDictationFilename(filename: string): string {
