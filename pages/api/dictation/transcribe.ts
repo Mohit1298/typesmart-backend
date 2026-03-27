@@ -1,6 +1,4 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import formidable from 'formidable';
-import fs from 'fs';
 import { authenticateRequest } from '@/lib/auth';
 import { deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '@/lib/supabase';
 import { transcribeBufferViaSonioxRealtime } from '@/lib/sonioxRealtimeTranscribe';
@@ -12,6 +10,7 @@ export const config = {
   maxDuration: 120,
 };
 
+const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 const LANGUAGE_HINT_MAP: Record<string, string[]> = {
@@ -20,15 +19,28 @@ const LANGUAGE_HINT_MAP: Record<string, string[]> = {
   gujarati_english: ['gu', 'en'],
 };
 
+function readRawBody(req: NextApiRequest): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) {
+        reject(new Error(`Body exceeds ${MAX_BODY_BYTES} bytes`));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
 function containsNonLatin(text: string): boolean {
   return /[^\u0000-\u024F\u1E00-\u1EFF\s\d.,!?;:'"()\-–—…@#$%^&*+=/<>[\]{}|\\~`_]/.test(text);
 }
 
-/**
- * With bilingual hints (e.g. hi+en), Soniox sometimes prepends a spurious English token like "But."
- * before Indic script. The romanizer correctly preserves it. Strip only when the rest is clearly
- * Indic/mixed (non-Latin), so real English-only phrases are unchanged.
- */
 function stripLeadingSpuriousEnglishBeforeIndic(text: string): { text: string; didStrip: boolean } {
   const trimmed = text.trim();
   if (!trimmed) return { text, didStrip: false };
@@ -108,6 +120,15 @@ ${rawText}`;
   };
 }
 
+/**
+ * Soniox dictation: raw audio body + metadata in headers → Soniox WS → romanize → respond before credits.
+ *
+ * Headers:
+ *   Content-Type: audio/wav
+ *   X-Language-Mode: hinglish | marathi_english | gujarati_english
+ *   X-Device-Id: <device-uuid>
+ *   Authorization: Bearer <token>  (optional)
+ */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -124,30 +145,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const startTime = Date.now();
 
   try {
-    // Parse multipart body and load user in parallel: auth only reads headers; form consumes the body stream.
-    // Previously this was sequential (auth → parse), adding Supabase RTT on top of upload parse time.
-    const form = formidable({ maxFileSize: 25 * 1024 * 1024 });
     const parseAuthStart = Date.now();
-    const [[fields, files], user] = await Promise.all([
-      form.parse(req),
+    const [audioBuffer, user] = await Promise.all([
+      readRawBody(req),
       authenticateRequest(req),
     ]);
     const parseAndAuthMs = Date.now() - parseAuthStart;
 
-    const audioFile = Array.isArray(files.audio) ? files.audio[0] : files.audio;
-    const languageMode = (Array.isArray(fields.languageMode) ? fields.languageMode[0] : fields.languageMode) || 'hinglish';
-    const deviceId = (Array.isArray(fields.deviceId) ? fields.deviceId[0] : fields.deviceId) || '';
+    const languageMode = (req.headers['x-language-mode'] as string) || 'hinglish';
+    const deviceId = (req.headers['x-device-id'] as string) || '';
 
-    if (!audioFile) {
-      return res.status(400).json({ error: 'Audio file is required (field name: audio)' });
+    if (!audioBuffer.length) {
+      return res.status(400).json({ error: 'Empty audio body' });
     }
 
     const hints = LANGUAGE_HINT_MAP[languageMode];
     if (!hints) {
       return res.status(400).json({ error: `Unsupported language mode: ${languageMode}` });
     }
-
-    const audioBuffer = fs.readFileSync(audioFile.filepath);
 
     const transcribeStart = Date.now();
     const rawFromStt = await transcribeBufferViaSonioxRealtime(audioBuffer, hints);
@@ -156,22 +171,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (strippedSpuriousBut) {
       console.log(
-        `[dictation] Stripped leading STT noise (spurious "But"): stt_raw="${rawFromStt.substring(0, 120)}" → use="${rawTranscript.substring(0, 120)}"`
+        `[dictation] Stripped leading STT noise: stt_raw="${rawFromStt.substring(0, 120)}" → use="${rawTranscript.substring(0, 120)}"`
       );
     }
 
-    // Romanization (OpenAI) must run after STT: totals are ~ sonioxMs + openaiMs + network, not max().
     const romanizeStart = Date.now();
     const romanizeResult = await romanizeText(rawTranscript, languageMode);
     const romanizeMs = Date.now() - romanizeStart;
 
-    let creditsMs = 0;
+    const totalMs = Date.now() - startTime;
+
+    console.log(
+      `[dictation] mode=${languageMode} provider=soniox-ws parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
+    );
+
+    res.status(200).json({
+      rawTranscript,
+      romanizedTranscript: romanizeResult.text,
+      detectedLanguage: languageMode,
+      provider: 'soniox',
+      creditsUsed: romanizeResult.didCallOpenAI ? 1 : 0,
+      timings: { transcribeMs, romanizeMs, totalMs },
+    });
+
+    // Fire-and-forget: credits + logging AFTER response is sent.
     if (romanizeResult.didCallOpenAI) {
       const creditCost = 1;
-      const creditsStart = Date.now();
       try {
         if (user) {
-          // Independent Supabase writes — sequential cost ~2× RTT; parallel saves wall time on totalMs.
           await Promise.all([
             deductCredits(user.id, creditCost),
             logUsage(
@@ -201,27 +228,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       } catch (logErr) {
         console.error('[dictation] Credit/log error (non-fatal):', logErr);
       }
-      creditsMs = Date.now() - creditsStart;
     }
-
-    try {
-      fs.unlinkSync(audioFile.filepath);
-    } catch {}
-
-    const totalMs = Date.now() - startTime;
-
-    console.log(
-      `[dictation] mode=${languageMode} provider=soniox-ws parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms credits=${creditsMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
-    );
-
-    return res.status(200).json({
-      rawTranscript,
-      romanizedTranscript: romanizeResult.text,
-      detectedLanguage: languageMode,
-      provider: 'soniox',
-      creditsUsed: romanizeResult.didCallOpenAI ? 1 : 0,
-      timings: { uploadMs: 0, transcribeMs, romanizeMs, totalMs },
-    });
   } catch (error: any) {
     console.error('Dictation transcription error:', error);
     return res.status(500).json({
