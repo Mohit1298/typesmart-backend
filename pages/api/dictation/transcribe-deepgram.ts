@@ -3,11 +3,7 @@ import formidable from 'formidable';
 import fs from 'fs';
 import { authenticateRequest } from '@/lib/auth';
 import { deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '@/lib/supabase';
-import {
-  transcribeBufferViaDeepgram,
-  contentTypeForDictationFilename,
-  interleaveChannelsFloat32ToInt16LE,
-} from '@/lib/deepgramTranscribe';
+import { transcribeBufferViaDeepgram, contentTypeForDictationFilename } from '@/lib/deepgramTranscribe';
 
 export const config = {
   api: {
@@ -17,7 +13,7 @@ export const config = {
 };
 
 /**
- * Fast Hinglish path: Core Audio / PCM in CAF from the app → Deepgram (hi-Latn) → no Soniox / no OpenAI romanization.
+ * Fast Hinglish path: app sends WAV (native CAF→WAV, same as Soniox) → Deepgram (hi-Latn).
  * @see https://developers.deepgram.com/docs/pre-recorded-audio
  */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -62,51 +58,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const audioBuffer = fs.readFileSync(audioFile.filepath);
-    const filename = audioFile.originalFilename || 'dictation.caf';
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-
-    let dgBody: Buffer;
-    let dgContentType: string;
-    let rawLinear16: { sampleRate: number; channels: number } | undefined;
-
-    // Deepgram does not accept Core Audio (.caf) containers reliably; decode to linear16 + query params.
-    if (ext === 'caf') {
-      try {
-        const decode = (await import('audio-decode')).default as (buf: Uint8Array) => Promise<{
-          channelData: Float32Array[];
-          sampleRate: number;
-        }>;
-        const { channelData, sampleRate } = await decode(new Uint8Array(audioBuffer));
-        if (!channelData?.length) {
-          throw new Error('No audio channels');
-        }
-        dgBody = interleaveChannelsFloat32ToInt16LE(channelData);
-        dgContentType = 'application/octet-stream';
-        rawLinear16 = {
-          sampleRate: Math.round(sampleRate),
-          channels: channelData.length,
-        };
-      } catch (cafErr) {
-        console.error('[dictation-deepgram] CAF decode failed:', cafErr);
-        try {
-          fs.unlinkSync(audioFile.filepath);
-        } catch {}
-        return res.status(400).json({
-          error: 'Could not read dictation audio (CAF). Try again or switch dictation mode.',
-          provider: 'deepgram',
-        });
-      }
-    } else {
-      dgBody = audioBuffer;
-      dgContentType = contentTypeForDictationFilename(filename);
-    }
+    const filename = audioFile.originalFilename || 'dictation.wav';
+    const contentType = contentTypeForDictationFilename(filename);
 
     const dgStart = Date.now();
-    const { transcript, deepgramMs } = await transcribeBufferViaDeepgram(
-      dgBody,
-      dgContentType,
-      rawLinear16
-    );
+    const { transcript, deepgramMs } = await transcribeBufferViaDeepgram(audioBuffer, contentType);
     const transcribeMs = Date.now() - dgStart;
 
     let creditsMs = 0;
@@ -137,11 +93,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const totalMs = Date.now() - startTime;
 
-    const pcmHint = rawLinear16
-      ? `linear16 ${rawLinear16.sampleRate}Hz/${rawLinear16.channels}ch`
-      : dgContentType;
     console.log(
-      `[dictation-deepgram] parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms deepgram_reported=${deepgramMs}ms credits=${creditsMs}ms total=${totalMs}ms len=${transcript.length} file="${filename}" audio=${pcmHint}`
+      `[dictation-deepgram] parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms deepgram_reported=${deepgramMs}ms credits=${creditsMs}ms total=${totalMs}ms len=${transcript.length} file="${filename}" contentType=${contentType}`
     );
 
     if (!transcript) {
