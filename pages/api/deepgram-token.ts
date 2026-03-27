@@ -26,15 +26,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       method: 'POST',
       headers: {
         Authorization: `Token ${key}`,
-        'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ ttl_seconds: 30 }),
     });
 
     if (!dgRes.ok) {
       const errText = await dgRes.text();
-      console.error('[deepgram-token] Grant failed:', errText);
-      return res.status(502).json({ error: 'Failed to generate Deepgram token' });
+      console.error('[deepgram-token] Grant failed:', dgRes.status, errText);
+      return res.status(502).json({
+        error: `Deepgram token grant failed (${dgRes.status}): ${errText.slice(0, 200)}`,
+      });
     }
 
     const { access_token, expires_in } = await dgRes.json();
