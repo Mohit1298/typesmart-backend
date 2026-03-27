@@ -6,6 +6,7 @@ import { deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '
 import {
   transcribeBufferViaDeepgram,
   contentTypeForDictationFilename,
+  interleaveChannelsFloat32ToInt16LE,
 } from '@/lib/deepgramTranscribe';
 
 export const config = {
@@ -62,12 +63,49 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const audioBuffer = fs.readFileSync(audioFile.filepath);
     const filename = audioFile.originalFilename || 'dictation.caf';
-    const contentType = contentTypeForDictationFilename(filename);
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+
+    let dgBody: Buffer;
+    let dgContentType: string;
+    let rawLinear16: { sampleRate: number; channels: number } | undefined;
+
+    // Deepgram does not accept Core Audio (.caf) containers reliably; decode to linear16 + query params.
+    if (ext === 'caf') {
+      try {
+        const decode = (await import('audio-decode')).default as (buf: Uint8Array) => Promise<{
+          channelData: Float32Array[];
+          sampleRate: number;
+        }>;
+        const { channelData, sampleRate } = await decode(new Uint8Array(audioBuffer));
+        if (!channelData?.length) {
+          throw new Error('No audio channels');
+        }
+        dgBody = interleaveChannelsFloat32ToInt16LE(channelData);
+        dgContentType = 'application/octet-stream';
+        rawLinear16 = {
+          sampleRate: Math.round(sampleRate),
+          channels: channelData.length,
+        };
+      } catch (cafErr) {
+        console.error('[dictation-deepgram] CAF decode failed:', cafErr);
+        try {
+          fs.unlinkSync(audioFile.filepath);
+        } catch {}
+        return res.status(400).json({
+          error: 'Could not read dictation audio (CAF). Try again or switch dictation mode.',
+          provider: 'deepgram',
+        });
+      }
+    } else {
+      dgBody = audioBuffer;
+      dgContentType = contentTypeForDictationFilename(filename);
+    }
 
     const dgStart = Date.now();
     const { transcript, deepgramMs } = await transcribeBufferViaDeepgram(
-      audioBuffer,
-      contentType
+      dgBody,
+      dgContentType,
+      rawLinear16
     );
     const transcribeMs = Date.now() - dgStart;
 
@@ -99,8 +137,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const totalMs = Date.now() - startTime;
 
+    const pcmHint = rawLinear16
+      ? `linear16 ${rawLinear16.sampleRate}Hz/${rawLinear16.channels}ch`
+      : dgContentType;
     console.log(
-      `[dictation-deepgram] parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms deepgram_reported=${deepgramMs}ms credits=${creditsMs}ms total=${totalMs}ms len=${transcript.length} file="${filename}"`
+      `[dictation-deepgram] parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms deepgram_reported=${deepgramMs}ms credits=${creditsMs}ms total=${totalMs}ms len=${transcript.length} file="${filename}" audio=${pcmHint}`
     );
 
     if (!transcript) {
