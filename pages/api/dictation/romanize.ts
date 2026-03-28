@@ -35,7 +35,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const user = await authenticateRequest(req);
     const { rawText, languageMode, deviceId } = req.body ?? {};
 
     if (!rawText || typeof rawText !== 'string') {
@@ -83,7 +82,7 @@ ${cleaned}`;
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.2,
-        max_tokens: 500,
+        max_tokens: 150,
       }),
     });
     const romanizeMs = Date.now() - startMs;
@@ -110,9 +109,10 @@ ${cleaned}`;
       creditsUsed: 1,
     });
 
-    // Fire-and-forget: credit logging after response
+    // Fire-and-forget: credit logging after response (auth resolved lazily here)
     const creditCost = 1;
     try {
+      const user = await authenticateRequest(req);
       if (user) {
         await Promise.all([
           deductCredits(user.id, creditCost),
