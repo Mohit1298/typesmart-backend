@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { waitUntil } from '@vercel/functions';
 import { authenticateRequest } from '@/lib/auth';
 import { deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '@/lib/supabase';
 import { transcribeBufferViaDeepgram } from '@/lib/deepgramTranscribe';
@@ -98,23 +99,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const creditCost = 1;
-    try {
-      if (user) {
-        await Promise.all([
-          deductCredits(user.id, creditCost),
-          logUsage(user.id, 'dictation_deepgram', false, creditCost, 0, 0, 0),
-        ]);
-      } else if (deviceId) {
-        await Promise.all([
-          logGuestUsage(deviceId, 'dictation_deepgram', false, creditCost, 0, 0, 0),
-          getOrCreateGuestCredit(deviceId, creditCost),
-        ]);
-      }
-    } catch (logErr) {
-      console.error('[dictation-deepgram] Credit/log error (non-fatal):', logErr);
-    }
 
-    return res.status(200).json({
+    res.status(200).json({
       rawTranscript: transcript,
       romanizedTranscript: transcript,
       detectedLanguage: 'hi-Latn',
@@ -122,6 +108,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       creditsUsed: creditCost,
       timings: { parseAndAuthMs, transcribeMs, totalMs },
     });
+
+    waitUntil(
+      (async () => {
+        try {
+          if (user) {
+            await Promise.all([
+              deductCredits(user.id, creditCost),
+              logUsage(user.id, 'dictation_deepgram', false, creditCost, 0, 0, 0),
+            ]);
+          } else if (deviceId) {
+            await Promise.all([
+              logGuestUsage(deviceId, 'dictation_deepgram', false, creditCost, 0, 0, 0),
+              getOrCreateGuestCredit(deviceId, creditCost),
+            ]);
+          }
+        } catch (logErr) {
+          console.error('[dictation-deepgram] Credit/log error (non-fatal):', logErr);
+        }
+      })()
+    );
+    return;
   } catch (error: any) {
     console.error('Dictation Deepgram error:', error);
     return res.status(500).json({

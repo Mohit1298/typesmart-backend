@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { waitUntil } from '@vercel/functions';
 import { authenticateRequest } from '@/lib/auth';
 import { deductCredits, logUsage, logGuestUsage, getOrCreateGuestCredit } from '@/lib/supabase';
 import { transcribeBufferViaSonioxRealtime } from '@/lib/sonioxRealtimeTranscribe';
@@ -185,44 +186,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       `[dictation] mode=${languageMode} provider=soniox-ws parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
     );
 
-    let creditsUsed = 0;
-    if (romanizeResult.didCallOpenAI) {
-      const creditCost = 1;
-      creditsUsed = creditCost;
-      try {
-        if (user) {
-          await Promise.all([
-            deductCredits(user.id, creditCost),
-            logUsage(
-              user.id,
-              'dictation',
-              false,
-              creditCost,
-              romanizeResult.tokensInput,
-              romanizeResult.tokensOutput,
-              romanizeResult.costUsd
-            ),
-          ]);
-        } else if (deviceId) {
-          await Promise.all([
-            logGuestUsage(
-              deviceId,
-              'dictation',
-              false,
-              creditCost,
-              romanizeResult.tokensInput,
-              romanizeResult.tokensOutput,
-              romanizeResult.costUsd
-            ),
-            getOrCreateGuestCredit(deviceId, creditCost),
-          ]);
-        }
-      } catch (logErr) {
-        console.error('[dictation] Credit/log error (non-fatal):', logErr);
-      }
-    }
+    const creditsUsed = romanizeResult.didCallOpenAI ? 1 : 0;
 
-    return res.status(200).json({
+    res.status(200).json({
       rawTranscript,
       romanizedTranscript: romanizeResult.text,
       detectedLanguage: languageMode,
@@ -230,6 +196,45 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       creditsUsed,
       timings: { transcribeMs, romanizeMs, totalMs },
     });
+
+    if (romanizeResult.didCallOpenAI) {
+      waitUntil(
+        (async () => {
+          try {
+            if (user) {
+              await Promise.all([
+                deductCredits(user.id, creditsUsed),
+                logUsage(
+                  user.id,
+                  'dictation',
+                  false,
+                  creditsUsed,
+                  romanizeResult.tokensInput,
+                  romanizeResult.tokensOutput,
+                  romanizeResult.costUsd
+                ),
+              ]);
+            } else if (deviceId) {
+              await Promise.all([
+                logGuestUsage(
+                  deviceId,
+                  'dictation',
+                  false,
+                  creditsUsed,
+                  romanizeResult.tokensInput,
+                  romanizeResult.tokensOutput,
+                  romanizeResult.costUsd
+                ),
+                getOrCreateGuestCredit(deviceId, creditsUsed),
+              ]);
+            }
+          } catch (logErr) {
+            console.error('[dictation] Credit/log error (non-fatal):', logErr);
+          }
+        })()
+      );
+    }
+    return;
   } catch (error: any) {
     console.error('Dictation transcription error:', error);
     return res.status(500).json({
