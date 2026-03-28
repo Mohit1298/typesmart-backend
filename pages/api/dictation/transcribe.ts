@@ -185,18 +185,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       `[dictation] mode=${languageMode} provider=soniox-ws parse+auth=${parseAndAuthMs}ms stt=${transcribeMs}ms roman=${romanizeMs}ms total=${totalMs}ms romanized=${romanizeResult.didCallOpenAI} raw="${rawTranscript.substring(0, 80)}" final="${romanizeResult.text.substring(0, 80)}"`
     );
 
-    res.status(200).json({
-      rawTranscript,
-      romanizedTranscript: romanizeResult.text,
-      detectedLanguage: languageMode,
-      provider: 'soniox',
-      creditsUsed: romanizeResult.didCallOpenAI ? 1 : 0,
-      timings: { transcribeMs, romanizeMs, totalMs },
-    });
-
-    // Fire-and-forget: credits + logging AFTER response is sent.
+    let creditsUsed = 0;
     if (romanizeResult.didCallOpenAI) {
       const creditCost = 1;
+      creditsUsed = creditCost;
       try {
         if (user) {
           await Promise.all([
@@ -229,6 +221,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         console.error('[dictation] Credit/log error (non-fatal):', logErr);
       }
     }
+
+    return res.status(200).json({
+      rawTranscript,
+      romanizedTranscript: romanizeResult.text,
+      detectedLanguage: languageMode,
+      provider: 'soniox',
+      creditsUsed,
+      timings: { transcribeMs, romanizeMs, totalMs },
+    });
   } catch (error: any) {
     console.error('Dictation transcription error:', error);
     return res.status(500).json({

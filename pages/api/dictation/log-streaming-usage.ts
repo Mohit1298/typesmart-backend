@@ -19,26 +19,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const user = await authenticateRequest(req);
     const { deviceId, transcriptLength } = req.body ?? {};
 
-    res.status(200).json({ success: true });
+    let creditsUsed = 0;
 
     if (typeof transcriptLength === 'number' && transcriptLength > 0) {
       const creditCost = 1;
-      try {
-        if (user) {
-          await Promise.all([
-            deductCredits(user.id, creditCost),
-            logUsage(user.id, 'dictation_streaming', false, creditCost, 0, 0, 0),
-          ]);
-        } else if (deviceId) {
-          await Promise.all([
-            logGuestUsage(deviceId, 'dictation_streaming', false, creditCost, 0, 0, 0),
-            getOrCreateGuestCredit(deviceId, creditCost),
-          ]);
-        }
-      } catch (logErr) {
-        console.error('[log-streaming-usage] Credit/log error (non-fatal):', logErr);
+      creditsUsed = creditCost;
+      if (user) {
+        await Promise.all([
+          deductCredits(user.id, creditCost),
+          logUsage(user.id, 'dictation_streaming', false, creditCost, 0, 0, 0),
+        ]);
+      } else if (deviceId) {
+        await Promise.all([
+          logGuestUsage(deviceId, 'dictation_streaming', false, creditCost, 0, 0, 0),
+          getOrCreateGuestCredit(deviceId, creditCost),
+        ]);
       }
     }
+
+    return res.status(200).json({ success: true, creditsUsed });
   } catch (error: any) {
     console.error('[log-streaming-usage] Error:', error);
     return res.status(500).json({ error: error.message || 'Usage logging failed' });

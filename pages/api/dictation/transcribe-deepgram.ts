@@ -35,7 +35,7 @@ function readRawBody(req: NextApiRequest): Promise<Buffer> {
  *
  * Headers:
  *   Content-Type: audio/wav
- *   X-Language-Mode: hinglish_fast
+ *   X-Language-Mode: hinglish_acc
  *   X-Device-Id: <device-uuid>
  *   Authorization: Bearer <token>  (optional)
  *
@@ -86,7 +86,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     );
 
     if (!transcript) {
-      res.status(200).json({
+      return res.status(200).json({
         rawTranscript: '',
         romanizedTranscript: null,
         detectedLanguage: 'hi-Latn',
@@ -95,36 +95,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         creditsUsed: 0,
         timings: { parseAndAuthMs, transcribeMs, totalMs },
       });
-    } else {
-      res.status(200).json({
-        rawTranscript: transcript,
-        romanizedTranscript: transcript,
-        detectedLanguage: 'hi-Latn',
-        provider: 'deepgram',
-        creditsUsed: 1,
-        timings: { parseAndAuthMs, transcribeMs, totalMs },
-      });
     }
 
-    // Fire-and-forget: credits + logging AFTER response is sent.
-    if (transcript.length > 0) {
-      const creditCost = 1;
-      try {
-        if (user) {
-          await Promise.all([
-            deductCredits(user.id, creditCost),
-            logUsage(user.id, 'dictation_deepgram', false, creditCost, 0, 0, 0),
-          ]);
-        } else if (deviceId) {
-          await Promise.all([
-            logGuestUsage(deviceId, 'dictation_deepgram', false, creditCost, 0, 0, 0),
-            getOrCreateGuestCredit(deviceId, creditCost),
-          ]);
-        }
-      } catch (logErr) {
-        console.error('[dictation-deepgram] Credit/log error (non-fatal):', logErr);
+    const creditCost = 1;
+    try {
+      if (user) {
+        await Promise.all([
+          deductCredits(user.id, creditCost),
+          logUsage(user.id, 'dictation_deepgram', false, creditCost, 0, 0, 0),
+        ]);
+      } else if (deviceId) {
+        await Promise.all([
+          logGuestUsage(deviceId, 'dictation_deepgram', false, creditCost, 0, 0, 0),
+          getOrCreateGuestCredit(deviceId, creditCost),
+        ]);
       }
+    } catch (logErr) {
+      console.error('[dictation-deepgram] Credit/log error (non-fatal):', logErr);
     }
+
+    return res.status(200).json({
+      rawTranscript: transcript,
+      romanizedTranscript: transcript,
+      detectedLanguage: 'hi-Latn',
+      provider: 'deepgram',
+      creditsUsed: creditCost,
+      timings: { parseAndAuthMs, transcribeMs, totalMs },
+    });
   } catch (error: any) {
     console.error('Dictation Deepgram error:', error);
     return res.status(500).json({
