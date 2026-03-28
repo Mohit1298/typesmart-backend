@@ -211,7 +211,7 @@ export async function logUsage(
   tokensOutput?: number,
   costUsd?: number
 ): Promise<void> {
-  await supabaseAdmin.from('usage_logs').insert({
+  const { error } = await supabaseAdmin.from('usage_logs').insert({
     user_id: userId,
     request_type: requestType,
     has_image: hasImage,
@@ -220,6 +220,9 @@ export async function logUsage(
     tokens_output: tokensOutput,
     cost_usd: costUsd
   });
+  if (error) {
+    console.error('[logUsage] Supabase insert error:', error.message, error.details);
+  }
 }
 
 // Guest tracking functions
@@ -232,7 +235,7 @@ export async function logGuestUsage(
   tokensOutput?: number,
   costUsd?: number
 ): Promise<void> {
-  await supabaseAdmin.from('guest_usage_logs').insert({
+  const { error } = await supabaseAdmin.from('guest_usage_logs').insert({
     device_id: deviceId,
     request_type: requestType,
     has_image: hasImage,
@@ -241,6 +244,9 @@ export async function logGuestUsage(
     tokens_output: tokensOutput,
     cost_usd: costUsd
   });
+  if (error) {
+    console.error('[logGuestUsage] Supabase insert error:', error.message, error.details);
+  }
 }
 
 export async function getOrCreateGuestCredit(deviceId: string, creditsUsed: number): Promise<GuestCredit> {
